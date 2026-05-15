@@ -26,6 +26,7 @@ const defaultDownloadManifest = {
 const defaultNotifications = [];
 const defaultUpdateFailureReports = [];
 const defaultUpdateReportToken = 'quick-translate-update-report-v1';
+const beijingOffsetMs = 8 * 60 * 60 * 1000;
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -1125,7 +1126,12 @@ function incrementDownloadMetrics(value, event) {
 }
 
 function formatMetricDay(date) {
-  return date.toISOString().slice(0, 10);
+  const normalizedDate = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(normalizedDate.getTime())) {
+    return '';
+  }
+
+  return new Date(normalizedDate.getTime() + beijingOffsetMs).toISOString().slice(0, 10);
 }
 
 function normalizeCounterRecord(value) {

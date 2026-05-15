@@ -6,6 +6,11 @@ import { createBackendApp } from './backend.mjs';
 
 let tempDir;
 let app;
+const beijingOffsetMs = 8 * 60 * 60 * 1000;
+
+function beijingDayKey(date) {
+  return new Date(date.getTime() + beijingOffsetMs).toISOString().slice(0, 10);
+}
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-'));
@@ -564,7 +569,7 @@ describe('backend app', () => {
       username: 'admin',
       password: 'admin-pass'
     });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDayKey(new Date());
 
     const firstTranslateResponse = await request('POST', '/api/translate', {
       text: 'hello',
@@ -583,6 +588,50 @@ describe('backend app', () => {
     expect(statsResponse.status).toBe(200);
     expect(statsResponse.body.metrics.translations.total).toBe(2);
     expect(statsResponse.body.metrics.translations.byDay[today]).toBe(2);
+  });
+
+  it('tracks daily translation usage by Beijing date across UTC midnight', async () => {
+    const adminLoginResponse = await request('POST', '/api/admin/login', {
+      username: 'admin',
+      password: 'admin-pass'
+    });
+
+    const realDate = globalThis.Date;
+    const fixedInstant = new realDate('2026-05-14T16:30:00.000Z');
+
+    class MockDate extends realDate {
+      constructor(...args) {
+        if (args.length === 0) {
+          return new realDate(fixedInstant);
+        }
+
+        return new realDate(...args);
+      }
+
+      static now() {
+        return fixedInstant.getTime();
+      }
+    }
+
+    MockDate.parse = realDate.parse;
+    MockDate.UTC = realDate.UTC;
+    globalThis.Date = MockDate;
+
+    try {
+      const translateResponse = await request('POST', '/api/translate', {
+        text: 'beijing-day',
+        targetLanguage: 'zh-CN',
+        translationFormat: 'plain'
+      });
+      const statsResponse = await request('GET', '/api/admin/stats', undefined, adminLoginResponse.body.token);
+
+      expect(translateResponse.status).toBe(200);
+      expect(statsResponse.status).toBe(200);
+      expect(statsResponse.body.metrics.translations.byDay['2026-05-15']).toBe(1);
+      expect(statsResponse.body.metrics.translations.byDay['2026-05-14']).toBeUndefined();
+    } finally {
+      globalThis.Date = realDate;
+    }
   });
 
   it('accepts the nginx backend prefix in API paths', async () => {

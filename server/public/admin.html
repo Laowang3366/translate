@@ -1552,7 +1552,9 @@
         'es-ES': '西班牙语',
         'ru-RU': '俄语'
       };
+      const beijingOffsetMs = 8 * 60 * 60 * 1000;
       const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -2365,18 +2367,9 @@
       }
 
       function renderTrend() {
-        const days = Array.from({ length: 7 }, (_, index) => {
-          const date = new Date();
-          date.setDate(date.getDate() - (6 - index));
-          return {
-            label: `${date.getMonth() + 1}/${date.getDate()}`,
-            key: date.toDateString(),
-            count: 0
-          };
-        });
+        const days = recentBeijingDays(7).map((day) => ({ ...day, count: 0 }));
         state.users.forEach((user) => {
-          const created = new Date(user.createdAt);
-          const item = days.find((day) => day.key === created.toDateString());
+          const item = days.find((day) => day.key === beijingDayKey(user.createdAt));
           if (item) item.count += 1;
         });
         const max = Math.max(1, ...days.map((day) => day.count));
@@ -2389,17 +2382,10 @@
         const metrics = state.metrics || {};
         const translations = metrics.translations || {};
         const byDay = translations.byDay || {};
-        const days = Array.from({ length: 7 }, (_, index) => {
-          const date = new Date();
-          date.setUTCHours(12, 0, 0, 0);
-          date.setUTCDate(date.getUTCDate() - (6 - index));
-          const key = date.toISOString().slice(0, 10);
-          return {
-            key,
-            label: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`,
-            count: Number(byDay[key] || 0)
-          };
-        });
+        const days = recentBeijingDays(7).map((day) => ({
+          ...day,
+          count: Number(byDay[day.key] || 0)
+        }));
 
         document.querySelector('#translation-usage-chart').innerHTML = renderTranslationUsageLineChart(days);
       }
@@ -2491,14 +2477,37 @@
         return new Intl.NumberFormat('zh-CN').format(value || 0);
       }
 
+      function beijingDayKey(value) {
+        const date = toBeijingCalendarDate(value);
+        return date ? date.toISOString().slice(0, 10) : '';
+      }
+
+      function recentBeijingDays(length) {
+        const base = toBeijingCalendarDate(new Date()) || new Date(Date.now() + beijingOffsetMs);
+        base.setUTCHours(12, 0, 0, 0);
+        return Array.from({ length }, (_value, index) => {
+          const date = new Date(base);
+          date.setUTCDate(base.getUTCDate() - (length - 1 - index));
+          return {
+            key: date.toISOString().slice(0, 10),
+            label: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`
+          };
+        });
+      }
+
+      function toBeijingCalendarDate(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? null : new Date(date.getTime() + beijingOffsetMs);
+      }
+
       function formatDate(value) {
         const date = new Date(value);
         return Number.isNaN(date.getTime()) ? '--' : dateFormatter.format(date);
       }
 
       function isToday(value) {
-        const date = new Date(value);
-        return !Number.isNaN(date.getTime()) && date.toDateString() === new Date().toDateString();
+        const key = beijingDayKey(value);
+        return Boolean(key) && key === beijingDayKey(new Date());
       }
 
       function languageLabel(value) {
