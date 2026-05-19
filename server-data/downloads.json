@@ -1,6 +1,16 @@
 {
-  "latestVersion": "0.1.96",
+  "latestVersion": "0.1.97",
   "releases": [
+    {
+      "version": "0.1.97",
+      "platform": "windows",
+      "fileName": "Quick-Translate-0.1.97.exe",
+      "url": "https://sg.lwvpscc.top/quick-translate/updates/latest/Quick-Translate-0.1.97.exe",
+      "size": 104467948,
+      "sha512": "ybDcH3su5jQm0wRmrdE+vMvW9Z4Y+ZFCPqNXjIpXGZxN6smM5w2P+OxW1RQ/k7GzPZUkW/5hQyEegX8Vl7H3fw==",
+      "releaseDate": "2026-05-19T04:50:37.424Z",
+      "releaseNotes": "0.1.97：新增桌面端悬浮窗出现位置设置，支持跟随鼠标、第一次出现的位置、自定义屏幕位置。\n自定义屏幕位置可通过设置页保存当前悬浮窗坐标，屏幕变化后会自动限制在可见区域内。"
+    },
     {
       "version": "0.1.96",
       "platform": "windows",
@@ -10,16 +20,6 @@
       "sha512": "N3Y/vtmZDyTNlmgcplJp+eVgU5woYmRwc9U4UMs106K/h2ZE1uprdJA6aH8r+KRBkT1MY89uqT4g/OBjTPqOdQ==",
       "releaseDate": "2026-05-14T07:59:09.221Z",
       "releaseNotes": "0.1.96：修复桌面端悬浮翻译快捷键定位偏移；快捷键触发后固定在鼠标位置附近打开，并保持悬浮卡片置于顶层；优化第二次选区复制重试。"
-    },
-    {
-      "version": "0.1.95",
-      "platform": "windows",
-      "fileName": "Quick-Translate-0.1.95.exe",
-      "url": "https://sg.lwvpscc.top/quick-translate/updates/latest/Quick-Translate-0.1.95.exe",
-      "size": 104465961,
-      "sha512": "JCPPgRJ/Prh07SmguSJhWuq2RcDtvZYjKV2HBkp3vkg2/KeMwa4p2d/vmLw2UiAquyAo5jk2nDAh46SiJ5OavA==",
-      "releaseDate": "2026-05-14T07:37:43.680Z",
-      "releaseNotes": "0.1.95：修复桌面端悬浮翻译快捷键偶现不触发、选中文本识别失败的问题；选区读取中会显示识别状态。"
     },
     {
       "version": "0.1.94",

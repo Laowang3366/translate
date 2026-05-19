@@ -1,20 +1,25 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const devServerUrl = 'http://127.0.0.1:5173/';
+const devServerPort = await findFreePort();
+const devServerUrl = `http://127.0.0.1:${devServerPort}/`;
 let vite;
 
 try {
-  if (!(await canFetch(devServerUrl))) {
-    vite = spawn('npm', ['run', 'dev', '--', '--host', '127.0.0.1', '--port', '5173'], {
-      shell: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
+  const viteCommand = process.platform === 'win32' ? 'cmd.exe' : 'npm';
+  const viteArgs =
+    process.platform === 'win32'
+      ? ['/c', 'npm', 'run', 'dev', '--', '--host', '127.0.0.1', '--port', String(devServerPort), '--strictPort']
+      : ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(devServerPort), '--strictPort'];
+  vite = spawn(viteCommand, viteArgs, {
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
 
-    vite.stdout.on('data', (chunk) => process.stdout.write(`[Vite] ${chunk}`));
-    vite.stderr.on('data', (chunk) => process.stderr.write(`[Vite] ${chunk}`));
-    await waitForUrl(devServerUrl, 20_000);
-  }
+  vite.stdout.on('data', (chunk) => process.stdout.write(`[Vite] ${chunk}`));
+  vite.stderr.on('data', (chunk) => process.stderr.write(`[Vite] ${chunk}`));
+  await waitForUrl(devServerUrl, 20_000);
 
   await runElectronSmoke();
   console.log('[桌面冒烟] Electron 启动冒烟通过');
@@ -25,13 +30,23 @@ try {
   terminateProcessTree(vite);
 }
 
-async function canFetch(url) {
-  try {
-    const response = await fetch(url);
-    return response.ok;
-  } catch {
-    return false;
-  }
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === 'object') {
+          resolve(address.port);
+          return;
+        }
+
+        reject(new Error('无法分配本地测试端口'));
+      });
+    });
+  });
 }
 
 async function waitForUrl(url, timeoutMs) {
@@ -60,6 +75,10 @@ function runElectronSmoke() {
       process.platform === 'win32' ? ['/c', 'node_modules\\.bin\\electron.cmd', '.', '--smoke-test'] : ['.', '--smoke-test'];
     const child = spawn(command, args, {
       shell: false,
+      env: {
+        ...process.env,
+        QUICK_TRANSLATE_RENDERER_URL: devServerUrl
+      },
       stdio: 'inherit'
     });
     const timeout = setTimeout(() => {

@@ -31,4 +31,46 @@ describe('floating window bounds', () => {
       height: 332
     });
   });
+
+  it('reuses the first recorded top-left position during the current app run', () => {
+    expect(
+      createFloatingWindowBounds(workArea, { x: 900, y: 620 }, currentBounds, {
+        positionMode: 'first-position',
+        firstPosition: { x: 160, y: 144 }
+      })
+    ).toEqual({
+      x: 160,
+      y: 144,
+      width: 420,
+      height: 332
+    });
+  });
+
+  it('uses saved custom top-left coordinates and clamps them to the visible work area', () => {
+    expect(
+      createFloatingWindowBounds(workArea, { x: 120, y: 90 }, currentBounds, {
+        positionMode: 'custom-position',
+        customPosition: { x: 980, y: 720 }
+      })
+    ).toEqual({
+      x: 780,
+      y: 468,
+      width: 420,
+      height: 332
+    });
+  });
+
+  it('falls back to cursor positioning when a fixed mode has no usable point yet', () => {
+    expect(
+      createFloatingWindowBounds(workArea, { x: 320, y: 240 }, currentBounds, {
+        positionMode: 'custom-position',
+        customPosition: null
+      })
+    ).toEqual({
+      x: 334,
+      y: 254,
+      width: 420,
+      height: 332
+    });
+  });
 });

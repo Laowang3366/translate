@@ -55,6 +55,7 @@ declare global {
         translationFormat: TranslationFormat;
       }>;
       retryUpdateTransaction?(input?: { transactionId?: string }): Promise<boolean>;
+      saveFloatingWindowPosition?(): Promise<DesktopSettings | null>;
       translateText?(input: { text: string; targetLanguage: string; translationFormat?: TranslationFormat }): Promise<TranslateTextResult>;
       windowControl?(
         command:

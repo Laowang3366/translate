@@ -1049,6 +1049,8 @@ describe('App', () => {
     let currentDesktopSettings = {
       mouseButton4Enabled: true,
       floatingTranslateShortcut: 'mouse-button-4',
+      floatingWindowPositionMode: 'follow-cursor',
+      customFloatingWindowPosition: null,
       launchAtLogin: false,
       hideToTrayOnClose: true,
       defaultTargetLanguage: 'es-ES',
@@ -1067,6 +1069,14 @@ describe('App', () => {
       };
       return Promise.resolve(currentDesktopSettings);
     });
+    const saveFloatingWindowPosition = vi.fn().mockImplementation(() => {
+      currentDesktopSettings = {
+        ...currentDesktopSettings,
+        floatingWindowPositionMode: 'custom-position',
+        customFloatingWindowPosition: { x: 246, y: 132 }
+      };
+      return Promise.resolve(currentDesktopSettings);
+    });
     window.quickTranslate = {
       captureSelectedText: vi.fn(),
       chooseUpdatePackageDirectory,
@@ -1075,6 +1085,7 @@ describe('App', () => {
       onSelectionCaptured: vi.fn(),
       getDesktopSettings: vi.fn().mockResolvedValue(currentDesktopSettings),
       openUpdatePackageDirectory,
+      saveFloatingWindowPosition,
       setDesktopSettings: vi.fn().mockImplementation((patch) => {
         currentDesktopSettings = {
           ...currentDesktopSettings,
@@ -1098,6 +1109,13 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: '退出应用' })).not.toBeInTheDocument();
 
     expect(screen.getByLabelText('悬浮翻译快捷键')).toHaveValue('mouse-button-4');
+    const floatingWindowPositionSelect = screen.getByLabelText('悬浮窗出现位置') as HTMLSelectElement;
+    expect(floatingWindowPositionSelect).toHaveValue('follow-cursor');
+    expect(Array.from(floatingWindowPositionSelect.options).map((option) => option.textContent)).toEqual([
+      '跟随鼠标',
+      '第一次出现的位置',
+      '自定义屏幕位置'
+    ]);
     expect(screen.getByLabelText('更新包保存路径')).toHaveValue('D:\\QuickTranslate\\packages');
     const launchAtLogin = await screen.findByLabelText('开机自启');
     expect(launchAtLogin).not.toBeChecked();
@@ -1111,6 +1129,32 @@ describe('App', () => {
         floatingTranslateShortcut: 'ctrl-alt-t'
       });
     });
+
+    fireEvent.change(floatingWindowPositionSelect, {
+      target: { value: 'first-position' }
+    });
+
+    await waitFor(() => {
+      expect(window.quickTranslate?.setDesktopSettings).toHaveBeenCalledWith({
+        floatingWindowPositionMode: 'first-position'
+      });
+    });
+
+    fireEvent.change(floatingWindowPositionSelect, {
+      target: { value: 'custom-position' }
+    });
+
+    await waitFor(() => {
+      expect(window.quickTranslate?.setDesktopSettings).toHaveBeenCalledWith({
+        floatingWindowPositionMode: 'custom-position'
+      });
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存当前悬浮窗位置' }));
+    await waitFor(() => {
+      expect(saveFloatingWindowPosition).toHaveBeenCalledOnce();
+    });
+    expect(screen.getByText('悬浮窗位置已保存')).toBeInTheDocument();
+    expect(screen.getByText('已保存：246, 132')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('悬浮翻译快捷键'), {
       target: { value: 'custom' }
@@ -1205,6 +1249,52 @@ describe('App', () => {
       expect(clearUpdatePackages).toHaveBeenCalledOnce();
     });
     expect(screen.getByText('已清理 2 个更新安装包')).toBeInTheDocument();
+  });
+
+  it('prompts before saving a custom floating window position when the floating window is closed', async () => {
+    window.quickTranslate = {
+      captureSelectedText: vi.fn(),
+      copyText: vi.fn(),
+      getDesktopSettings: vi.fn().mockResolvedValue({
+        mouseButton4Enabled: true,
+        floatingTranslateShortcut: 'mouse-button-4',
+        floatingWindowPositionMode: 'follow-cursor',
+        customFloatingWindowPosition: null,
+        launchAtLogin: false,
+        hideToTrayOnClose: true,
+        defaultTargetLanguage: 'zh-CN',
+        defaultTranslationFormat: 'plain',
+        updatePackageDirectory: 'D:\\QuickTranslate\\packages'
+      }),
+      onSelectionCaptured: vi.fn(),
+      saveFloatingWindowPosition: vi.fn().mockResolvedValue(null),
+      setDesktopSettings: vi.fn().mockImplementation((patch) =>
+        Promise.resolve({
+          mouseButton4Enabled: true,
+          floatingTranslateShortcut: 'mouse-button-4',
+          floatingWindowPositionMode: 'custom-position',
+          customFloatingWindowPosition: null,
+          launchAtLogin: false,
+          hideToTrayOnClose: true,
+          defaultTargetLanguage: 'zh-CN',
+          defaultTranslationFormat: 'plain',
+          updatePackageDirectory: 'D:\\QuickTranslate\\packages',
+          ...patch
+        })
+      )
+    } as any;
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.change(await screen.findByLabelText('悬浮窗出现位置'), {
+      target: { value: 'custom-position' }
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '保存当前悬浮窗位置' }));
+
+    await waitFor(() => {
+      expect(window.quickTranslate?.saveFloatingWindowPosition).toHaveBeenCalledOnce();
+    });
+    expect(screen.getByText('请先打开悬浮窗并拖到目标位置')).toBeInTheDocument();
   });
 
   it('does not show settings hints below the translate input panels', async () => {

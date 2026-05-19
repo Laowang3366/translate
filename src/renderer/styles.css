@@ -1878,6 +1878,10 @@ textarea::placeholder {
   gap: 10px;
 }
 
+.floating-position-actions {
+  grid-template-columns: minmax(0, 220px);
+}
+
 .path-setting-control small {
   color: #637083;
   font-size: 12px;

@@ -18,9 +18,23 @@ export type FloatingTranslateShortcutOption = {
   accelerator?: string;
 };
 
+export type FloatingWindowPositionMode = 'follow-cursor' | 'first-position' | 'custom-position';
+
+export type FloatingWindowPosition = {
+  x: number;
+  y: number;
+};
+
+export type FloatingWindowPositionOption = {
+  value: FloatingWindowPositionMode;
+  label: string;
+};
+
 export type DesktopSettings = {
   mouseButton4Enabled: boolean;
   floatingTranslateShortcut: FloatingTranslateShortcut;
+  floatingWindowPositionMode: FloatingWindowPositionMode;
+  customFloatingWindowPosition: FloatingWindowPosition | null;
   launchAtLogin: boolean;
   hideToTrayOnClose: boolean;
   defaultTargetLanguage: string;
@@ -38,7 +52,14 @@ export const floatingTranslateShortcutOptions: FloatingTranslateShortcutOption[]
   { value: 'disabled', label: '关闭快捷键' }
 ];
 
+export const floatingWindowPositionOptions: FloatingWindowPositionOption[] = [
+  { value: 'follow-cursor', label: '跟随鼠标' },
+  { value: 'first-position', label: '第一次出现的位置' },
+  { value: 'custom-position', label: '自定义屏幕位置' }
+];
+
 const customShortcutPrefix = 'custom:';
+const maxStoredFloatingWindowCoordinate = 1_000_000;
 const supportedModifierKeys = new Set(['CommandOrControl', 'Control', 'Command', 'Alt', 'Option', 'AltGr', 'Shift', 'Super']);
 const supportedNamedKeys = new Set([
   'Plus',
@@ -77,6 +98,8 @@ const supportedPunctuationKeys = new Set(['`', '-', '=', '[', ']', '\\', ';', "'
 export const defaultDesktopSettings: DesktopSettings = {
   mouseButton4Enabled: true,
   floatingTranslateShortcut: 'mouse-button-4',
+  floatingWindowPositionMode: 'follow-cursor',
+  customFloatingWindowPosition: null,
   launchAtLogin: false,
   hideToTrayOnClose: false,
   defaultTargetLanguage,
@@ -90,6 +113,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function booleanOrDefault(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+export function normalizeFloatingWindowPositionMode(value: unknown): FloatingWindowPositionMode {
+  return floatingWindowPositionOptions.some((option) => option.value === value)
+    ? (value as FloatingWindowPositionMode)
+    : defaultDesktopSettings.floatingWindowPositionMode;
+}
+
+export function normalizeFloatingWindowPosition(value: unknown): FloatingWindowPosition | null {
+  if (!isRecord(value) || typeof value.x !== 'number' || typeof value.y !== 'number') {
+    return null;
+  }
+
+  if (!isSafeFloatingWindowCoordinate(value.x) || !isSafeFloatingWindowCoordinate(value.y)) {
+    return null;
+  }
+
+  return {
+    x: Math.round(value.x),
+    y: Math.round(value.y)
+  };
 }
 
 export function normalizeFloatingTranslateShortcut(value: unknown): FloatingTranslateShortcut {
@@ -302,6 +346,10 @@ function sortShortcutModifiers(modifiers: string[]) {
   return [...modifiers].sort((left, right) => sortOrder.indexOf(left) - sortOrder.indexOf(right));
 }
 
+function isSafeFloatingWindowCoordinate(value: number) {
+  return Number.isFinite(value) && Math.abs(value) <= maxStoredFloatingWindowCoordinate;
+}
+
 export function normalizeDesktopSettings(value: unknown): DesktopSettings {
   const record = isRecord(value) ? value : {};
   const hasFloatingShortcut = typeof record.floatingTranslateShortcut === 'string';
@@ -314,6 +362,8 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
   return {
     mouseButton4Enabled: floatingTranslateShortcut === 'mouse-button-4',
     floatingTranslateShortcut,
+    floatingWindowPositionMode: normalizeFloatingWindowPositionMode(record.floatingWindowPositionMode),
+    customFloatingWindowPosition: normalizeFloatingWindowPosition(record.customFloatingWindowPosition),
     launchAtLogin: booleanOrDefault(record.launchAtLogin, defaultDesktopSettings.launchAtLogin),
     hideToTrayOnClose: booleanOrDefault(record.hideToTrayOnClose, defaultDesktopSettings.hideToTrayOnClose),
     defaultTargetLanguage: normalizeTargetLanguage(record.defaultTargetLanguage),

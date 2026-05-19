@@ -39,6 +39,7 @@ import {
   parseDesktopSettings,
   serializeDesktopSettings,
   type DesktopSettings,
+  type FloatingWindowPosition,
   type FloatingTranslateShortcut
 } from './desktopSettings.js';
 import { reuseFloatingWindowForShortcut } from './floatingWindowLifecycle.js';
@@ -98,6 +99,7 @@ let desktopSettings: DesktopSettings = defaultDesktopSettings;
 let floatingSessionPreferences: FloatingSessionPreferenceState = {};
 let clipboardRecoveryStore: ClipboardRecoveryStore | null = null;
 let floatingWindowRenderToken = 0;
+let floatingWindowFirstPosition: FloatingWindowPosition | null = null;
 const windowsCopyShortcutSender = createWindowsCopyShortcutSender({ logger: console, requestTimeoutMs: 900 });
 const floatingWindowSizes = {
   compact: { width: 360, height: 300 },
@@ -272,7 +274,12 @@ async function loadRendererWindow(window: BrowserWindow, options: { floating?: b
     return;
   }
 
-  await window.loadURL(`http://127.0.0.1:5173${options.floating ? '?floating=1' : ''}`);
+  const rendererUrl = new URL(process.env.QUICK_TRANSLATE_RENDERER_URL || 'http://127.0.0.1:5173/');
+  if (options.floating) {
+    rendererUrl.searchParams.set('floating', '1');
+  }
+
+  await window.loadURL(rendererUrl.toString());
 }
 
 async function readSelectedTextFromSystem(options: { showFloatingCaptureProgress?: boolean; cursorPoint?: Point } = {}) {
@@ -513,6 +520,40 @@ async function createFloatingWindow() {
   return floatingWindow;
 }
 
+function getFloatingWindowPositionTarget(cursorPoint: Point) {
+  if (desktopSettings.floatingWindowPositionMode === 'custom-position' && desktopSettings.customFloatingWindowPosition) {
+    const { workArea } = screen.getDisplayNearestPoint(desktopSettings.customFloatingWindowPosition);
+    return {
+      workArea,
+      boundsOptions: {
+        positionMode: 'custom-position' as const,
+        customPosition: desktopSettings.customFloatingWindowPosition
+      }
+    };
+  }
+
+  if (desktopSettings.floatingWindowPositionMode === 'first-position' && floatingWindowFirstPosition) {
+    const { workArea } = screen.getDisplayNearestPoint(floatingWindowFirstPosition);
+    return {
+      workArea,
+      boundsOptions: {
+        positionMode: 'first-position' as const,
+        firstPosition: floatingWindowFirstPosition
+      }
+    };
+  }
+
+  const { workArea } = screen.getDisplayNearestPoint(cursorPoint);
+  return {
+    workArea,
+    boundsOptions: {
+      positionMode: desktopSettings.floatingWindowPositionMode,
+      firstPosition: floatingWindowFirstPosition,
+      customPosition: desktopSettings.customFloatingWindowPosition
+    }
+  };
+}
+
 async function showFloatingTranslation(
   text: string,
   options: FloatingShortcutResultOptions & { focus?: boolean; cursorPoint?: Point; keepTopMost?: boolean } = {}
@@ -522,10 +563,14 @@ async function showFloatingTranslation(
   floatingWindow = reuseFloatingWindowForShortcut(floatingWindow);
   const window = await createFloatingWindow();
   const cursorPoint = options.cursorPoint ?? screen.getCursorScreenPoint();
-  const { workArea } = screen.getDisplayNearestPoint(cursorPoint);
+  const { workArea, boundsOptions } = getFloatingWindowPositionTarget(cursorPoint);
   const bounds = window.getBounds();
+  const nextBounds = createFloatingWindowBounds(workArea, cursorPoint, bounds, boundsOptions);
 
-  window.setBounds(createFloatingWindowBounds(workArea, cursorPoint, bounds));
+  window.setBounds(nextBounds);
+  if (desktopSettings.floatingWindowPositionMode === 'first-position' && !floatingWindowFirstPosition) {
+    floatingWindowFirstPosition = { x: nextBounds.x, y: nextBounds.y };
+  }
   if (window.isMinimized()) {
     window.restore();
   }
@@ -555,6 +600,18 @@ async function showFloatingTranslation(
   setTimeout(dispatchCapturedSource, 50);
 }
 
+function saveFloatingWindowPosition() {
+  if (!floatingWindow || floatingWindow.isDestroyed() || !floatingWindow.isVisible()) {
+    return null;
+  }
+
+  const bounds = floatingWindow.getBounds();
+  return updateDesktopSettings({
+    floatingWindowPositionMode: 'custom-position',
+    customFloatingWindowPosition: { x: bounds.x, y: bounds.y }
+  });
+}
+
 function getFloatingSessionPreferences() {
   return readFloatingSessionPreferences(floatingSessionPreferences, {
     targetLanguage: desktopSettings.defaultTargetLanguage,
@@ -577,7 +634,11 @@ function updateFloatingSessionPreferenceState(input: unknown) {
 }
 
 function applyDesktopSettings(settings: DesktopSettings) {
+  const previousPositionMode = desktopSettings.floatingWindowPositionMode;
   desktopSettings = settings;
+  if (settings.floatingWindowPositionMode !== 'first-position' || settings.floatingWindowPositionMode !== previousPositionMode) {
+    floatingWindowFirstPosition = null;
+  }
   app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
   setFloatingTranslateShortcut(settings.floatingTranslateShortcut);
   updateTrayMenu();
@@ -906,6 +967,7 @@ if (hasSingleInstanceLock) {
       return true;
     });
     ipcMain.handle('set-desktop-settings', (_event, settings: Partial<DesktopSettings>) => updateDesktopSettings(settings));
+    ipcMain.handle('save-floating-window-position', () => saveFloatingWindowPosition());
     ipcMain.handle('set-floating-session-preferences', (_event, preferences: unknown) => updateFloatingSessionPreferenceState(preferences));
     ipcMain.handle('window-control', (_event, command: unknown) => executeWindowControl(command));
     ipcMain.handle('translate-text', (_event, input: unknown) => {

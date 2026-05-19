@@ -32,10 +32,12 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import {
   createCustomFloatingTranslateShortcut,
   floatingTranslateShortcutOptions,
+  floatingWindowPositionOptions,
   formatShortcutAcceleratorLabel,
   getFloatingTranslateShortcutLabel,
   isCustomFloatingTranslateShortcut,
   normalizeCustomShortcutAccelerator,
+  normalizeFloatingWindowPositionMode,
   normalizeFloatingTranslateShortcut,
   type DesktopSettings
 } from '../desktop/desktopSettings';
@@ -519,6 +521,7 @@ export function App() {
   const [mobileFloatingMessage, setMobileFloatingMessage] = useState('');
   const [updatePackageDirectoryDraft, setUpdatePackageDirectoryDraft] = useState('');
   const [updatePackageMessage, setUpdatePackageMessage] = useState('');
+  const [floatingWindowPositionMessage, setFloatingWindowPositionMessage] = useState('');
   const [notifications, setNotifications] = useState<ClientNotification[]>([]);
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState(loadDismissedNotificationIds);
   const [activeNotification, setActiveNotification] = useState<ClientNotification | null>(null);
@@ -1232,6 +1235,31 @@ export function App() {
     void updateDesktopSettings({ floatingTranslateShortcut: normalizeFloatingTranslateShortcut(value) });
   }
 
+  function selectFloatingWindowPositionMode(value: string) {
+    setFloatingWindowPositionMessage('');
+    void updateDesktopSettings({ floatingWindowPositionMode: normalizeFloatingWindowPositionMode(value) });
+  }
+
+  async function saveFloatingWindowPosition() {
+    if (!window.quickTranslate?.saveFloatingWindowPosition) {
+      setFloatingWindowPositionMessage('当前环境不支持保存悬浮窗位置');
+      return;
+    }
+
+    try {
+      const settings = await window.quickTranslate.saveFloatingWindowPosition();
+      if (!settings) {
+        setFloatingWindowPositionMessage('请先打开悬浮窗并拖到目标位置');
+        return;
+      }
+
+      setDesktopSettingsState(settings);
+      setFloatingWindowPositionMessage('悬浮窗位置已保存');
+    } catch {
+      setFloatingWindowPositionMessage('悬浮窗位置保存失败');
+    }
+  }
+
   async function saveUpdatePackageDirectory() {
     const nextDirectory = updatePackageDirectoryDraft.trim();
     if (!nextDirectory) {
@@ -1713,6 +1741,10 @@ export function App() {
           ? '更新失败'
           : '';
   const normalizedFloatingShortcut = normalizeFloatingTranslateShortcut(desktopSettings?.floatingTranslateShortcut);
+  const floatingWindowPositionMode = normalizeFloatingWindowPositionMode(desktopSettings?.floatingWindowPositionMode);
+  const customFloatingWindowPositionLabel = desktopSettings?.customFloatingWindowPosition
+    ? `已保存：${desktopSettings.customFloatingWindowPosition.x}, ${desktopSettings.customFloatingWindowPosition.y}`
+    : '未保存自定义位置';
   const isCustomFloatingShortcut = isCustomFloatingTranslateShortcut(normalizedFloatingShortcut);
   const shouldShowCustomFloatingShortcutEditor =
     isCustomFloatingShortcut || showCustomFloatingShortcutEditor || isRecordingFloatingShortcut;
@@ -2332,6 +2364,41 @@ export function App() {
                                 {floatingShortcutError || '可录入单键或任意键盘组合键；Esc 取消录入'}
                               </small>
                             </div>
+                          ) : null}
+                        </div>
+                      </label>
+                      <label className="settings-field">
+                        <span>悬浮窗出现位置</span>
+                        <div className="path-setting-control">
+                          <select
+                            value={floatingWindowPositionMode}
+                            aria-label="悬浮窗出现位置"
+                            onChange={(event) => selectFloatingWindowPositionMode(event.target.value)}
+                          >
+                            {floatingWindowPositionOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          {floatingWindowPositionMode === 'custom-position' ? (
+                            <>
+                              <div className="path-setting-actions floating-position-actions">
+                                <button
+                                  className="settings-action"
+                                  type="button"
+                                  aria-label="保存当前悬浮窗位置"
+                                  onClick={saveFloatingWindowPosition}
+                                >
+                                  <Pin size={18} />
+                                  <span>保存当前位置</span>
+                                </button>
+                              </div>
+                              <small>{floatingWindowPositionMessage || customFloatingWindowPositionLabel}</small>
+                              {floatingWindowPositionMessage && desktopSettings.customFloatingWindowPosition ? (
+                                <small>{customFloatingWindowPositionLabel}</small>
+                              ) : null}
+                            </>
                           ) : null}
                         </div>
                       </label>

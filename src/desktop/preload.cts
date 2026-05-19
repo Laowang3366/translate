@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('quickTranslate', {
   setDesktopSettings: (settings: unknown) => ipcRenderer.invoke('set-desktop-settings', settings),
   setFloatingSessionPreferences: (preferences: unknown) => ipcRenderer.invoke('set-floating-session-preferences', preferences),
   retryUpdateTransaction: (input?: unknown) => ipcRenderer.invoke('retry-update-transaction', input),
+  saveFloatingWindowPosition: () => ipcRenderer.invoke('save-floating-window-position'),
   translateText: (input: unknown) => ipcRenderer.invoke('translate-text', input),
   windowControl: (command: unknown) => ipcRenderer.invoke('window-control', command)
 });
