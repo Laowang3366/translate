@@ -26,4 +26,13 @@ describe('download page platform cards', () => {
     expect(html).toContain('event.totalChunks || chunkCount');
     expect(html).toContain('readDemoStreamEvents');
   });
+
+  it('only autoplays the interface carousel while the interface view is visible', async () => {
+    const html = await readFile(path.resolve('server/public/download.html'), 'utf8');
+
+    expect(html).toContain('function setCarouselAutoplay(enabled)');
+    expect(html).toContain("setCarouselAutoplay(normalizedView === 'interface')");
+    expect(html).toContain('if (image.dataset.currentAsset !== slide.image)');
+    expect(html).not.toContain('resetCarouselTimer();\n\n      document.querySelector');
+  });
 });

@@ -776,6 +776,7 @@
         if (shouldPushState) {
           history.pushState({ view: normalizedView }, '', normalizedView === 'download' ? '/download' : '/');
         }
+        setCarouselAutoplay(normalizedView === 'interface');
         window.scrollTo({ top: 0, behavior: 'auto' });
       }
 
@@ -1078,7 +1079,10 @@
         activeSlide = (index + slides.length) % slides.length;
         const slide = slides[activeSlide];
         const image = document.querySelector('#carousel-image');
-        image.src = `${assetBase}${slide.image}`;
+        if (image.dataset.currentAsset !== slide.image) {
+          image.src = `${assetBase}${slide.image}`;
+          image.dataset.currentAsset = slide.image;
+        }
         image.alt = slide.title;
         document.querySelector('#carousel-kicker').textContent = slide.kicker;
         document.querySelector('#carousel-title').textContent = slide.title;
@@ -1097,9 +1101,16 @@
         });
       }
 
-      function resetCarouselTimer() {
+      function setCarouselAutoplay(enabled) {
         window.clearInterval(carouselTimer);
-        carouselTimer = window.setInterval(() => renderSlide(activeSlide + 1), 7000);
+        carouselTimer = 0;
+        if (enabled) {
+          carouselTimer = window.setInterval(() => renderSlide(activeSlide + 1), 7000);
+        }
+      }
+
+      function resetCarouselTimer() {
+        setCarouselAutoplay(!document.querySelector('#interface-view')?.classList.contains('hidden'));
       }
 
       document.querySelector('#carousel-dots').append(
@@ -1125,7 +1136,6 @@
         resetCarouselTimer();
       });
       renderSlide(0);
-      resetCarouselTimer();
 
       document.querySelector('#show-interface-button').addEventListener('click', () => {
         showView('interface');
