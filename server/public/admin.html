@@ -1254,6 +1254,12 @@
             <article class="stat-card"><span class="stat-icon" aria-hidden="true">译</span><div><span>翻译接口</span><strong id="data-translate-api-total">0</strong></div></article>
             <article class="stat-card"><span class="stat-icon red" aria-hidden="true">包</span><div><span>下载接口</span><strong id="data-download-api-total">0</strong></div></article>
           </div>
+          <div class="stats-grid four">
+            <article class="stat-card"><span class="stat-icon green" aria-hidden="true">缓</span><div><span>缓存命中率</span><strong id="data-cache-hit-rate">0%</strong></div></article>
+            <article class="stat-card"><span class="stat-icon" aria-hidden="true">模</span><div><span>模型请求</span><strong id="data-provider-request-total">0</strong></div></article>
+            <article class="stat-card"><span class="stat-icon" aria-hidden="true">首</span><div><span>平均首段耗时</span><strong id="data-average-first-chunk-ms">0ms</strong></div></article>
+            <article class="stat-card"><span class="stat-icon red" aria-hidden="true">总</span><div><span>平均完整耗时</span><strong id="data-average-duration-ms">0ms</strong></div></article>
+          </div>
           <div class="data-layout">
             <section class="panel-card chart-card">
               <div class="chart-head">
@@ -2301,6 +2307,10 @@
         document.querySelector('#data-download-api-total').textContent = formatNumber(
           (byEndpoint['GET /api/downloads'] || 0) + (byEndpoint['POST /api/downloads/track'] || 0)
         );
+        document.querySelector('#data-cache-hit-rate').textContent = formatPercent(translations.cacheHitRate);
+        document.querySelector('#data-provider-request-total').textContent = formatNumber(translations.providerRequests);
+        document.querySelector('#data-average-first-chunk-ms').textContent = formatDurationMs(translations.averageFirstChunkMs);
+        document.querySelector('#data-average-duration-ms').textContent = formatDurationMs(translations.averageDurationMs);
       }
 
       function renderUsers() {
@@ -2526,6 +2536,15 @@
 
       function formatNumber(value) {
         return new Intl.NumberFormat('zh-CN').format(value || 0);
+      }
+
+      function formatPercent(value) {
+        return `${Math.round(Number(value || 0) * 100)}%`;
+      }
+
+      function formatDurationMs(value) {
+        const ms = Number(value || 0);
+        return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
       }
 
       function beijingDayKey(value) {

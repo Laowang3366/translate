@@ -29,6 +29,26 @@ describe('App', () => {
     });
   }
 
+  function createEventStreamResponse(events: Array<Record<string, unknown>>) {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      start(controller) {
+        events.forEach((event) => {
+          controller.enqueue(
+            encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+          );
+        });
+        controller.close();
+      }
+    });
+
+    return {
+      ok: true,
+      body,
+      json: () => Promise.resolve({})
+    } as Response;
+  }
+
   it('translates typed or pasted text through the mock provider', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
     render(<App />);
@@ -43,16 +63,23 @@ describe('App', () => {
     });
   });
 
-  it('uses the cloud translation channel in web and mobile environments without requiring login', async () => {
+  it('uses the cloud streaming translation channel in web and mobile environments without requiring login', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
-      json: () =>
-        Promise.resolve({
-          provider: 'openai-compatible',
-          sourceText: 'hello',
-          translatedText: '云端译文',
-          targetLanguage: 'zh-CN'
-        })
+      body: createEventStreamResponse([
+        { type: 'start', totalChunks: 1, sourceLength: 5, mode: 'single' },
+        { type: 'chunk', chunkIndex: 1, chunkCount: 1, progress: 100, translatedText: '云端译文', fromCache: false },
+        {
+          type: 'done',
+          result: {
+            provider: 'openai-compatible',
+            sourceText: 'hello',
+            translatedText: '云端译文',
+            targetLanguage: 'zh-CN'
+          }
+        }
+      ]).body,
+      json: () => Promise.resolve({})
     } as Response);
 
     render(<App />);
@@ -65,7 +92,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.getByText('云端译文')).toBeInTheDocument();
     });
-    expect(fetch).toHaveBeenCalledWith(`${defaultCloudBaseUrl}/api/translate`, {
+    expect(fetch).toHaveBeenCalledWith(`${defaultCloudBaseUrl}/api/translate/stream`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

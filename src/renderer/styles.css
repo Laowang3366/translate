@@ -1052,7 +1052,8 @@ textarea::placeholder {
 
 .translated-text,
 .empty-state,
-.error-message {
+.error-message,
+.stream-progress {
   overflow-wrap: anywhere;
   word-break: break-word;
   font-size: 20px;
@@ -1070,6 +1071,14 @@ textarea::placeholder {
 
 .error-message {
   color: #b42318;
+}
+
+.stream-progress {
+  margin-bottom: 10px;
+  color: #0d66d8;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 .result-tools {

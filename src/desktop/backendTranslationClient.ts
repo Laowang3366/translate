@@ -18,7 +18,7 @@ type BackendErrorPayload = {
   error?: string;
 };
 
-const defaultTimeoutMs = 30_000;
+const defaultTimeoutMs = 95_000;
 
 export function resolveDesktopBackendBaseUrl(env: Record<string, string | undefined> = process.env) {
   return normalizeBackendBaseUrl(

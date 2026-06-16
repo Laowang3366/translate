@@ -64,6 +64,16 @@ async function request(method, pathname, body, token) {
   });
 }
 
+async function collectTranslationStream(streamResult) {
+  const events = [];
+  expect(streamResult.status).toBe(200);
+  expect(typeof streamResult.stream).toBe('function');
+  await streamResult.stream((event) => {
+    events.push(event);
+  });
+  return events;
+}
+
 describe('backend app', () => {
   it('registers a user, logs in, and syncs user state', async () => {
     const registerResponse = await request('POST', '/api/auth/register', {
@@ -785,6 +795,123 @@ describe('backend app', () => {
       expect(statsResponse.body.metrics.translations.byDay['2026-05-14']).toBeUndefined();
     } finally {
       globalThis.Date = realDate;
+    }
+  });
+
+  it('caches successful translation chunks and reports cache metrics', async () => {
+    let providerCalls = 0;
+    const cacheDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-cache-'));
+    const cacheApp = createBackendApp({
+      dataDir: cacheDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'sk-cache',
+        model: 'gpt-cache'
+      },
+      translateText: async ({ text, targetLanguage, provider }) => {
+        providerCalls += 1;
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: `cached:${text}`,
+          provider: provider.providerType
+        };
+      }
+    });
+
+    try {
+      const input = {
+        text: 'Cache this short source text.',
+        targetLanguage: 'zh-CN',
+        translationFormat: 'plain'
+      };
+      const firstResponse = await cacheApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      const secondResponse = await cacheApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      await cacheApp.store.waitForMetrics();
+      const metrics = await cacheApp.store.getMetrics();
+
+      expect(firstResponse.status).toBe(200);
+      expect(secondResponse.status).toBe(200);
+      expect(secondResponse.body.translatedText).toBe(firstResponse.body.translatedText);
+      expect(providerCalls).toBe(1);
+      expect(metrics.translations.total).toBe(2);
+      expect(metrics.translations.providerRequests).toBe(1);
+      expect(metrics.translations.cacheHits).toBe(1);
+      expect(metrics.translations.cacheMisses).toBe(1);
+      expect(metrics.translations.cacheHitRate).toBeCloseTo(0.5);
+      expect(metrics.translations.savedProviderRequests).toBe(1);
+    } finally {
+      await cacheApp.store.waitForMetrics();
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it('streams chunk progress events and stores streaming translation metrics', async () => {
+    const streamDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-stream-'));
+    const streamApp = createBackendApp({
+      dataDir: streamDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'sk-stream',
+        model: 'gpt-stream'
+      },
+      translateText: async ({ text, targetLanguage, provider }) => ({
+        sourceText: text,
+        targetLanguage,
+        translatedText: `streamed:${text.slice(0, 12)} `.repeat(40),
+        provider: provider.providerType
+      })
+    });
+
+    try {
+      const streamResult = await streamApp.prepareTranslationStream({
+        method: 'POST',
+        url: '/api/translate/stream',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: variedSentence(140),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+      const events = await collectTranslationStream(streamResult);
+      await streamApp.store.waitForMetrics();
+      const metrics = await streamApp.store.getMetrics();
+
+      expect(events[0]).toMatchObject({ type: 'start', totalChunks: expect.any(Number) });
+      expect(events.some((event) => event.type === 'chunk' && event.chunkIndex === 1)).toBe(true);
+      expect(events.at(-1)).toMatchObject({
+        type: 'done',
+        result: expect.objectContaining({
+          translatedText: expect.stringContaining('streamed:')
+        })
+      });
+      expect(metrics.translations.total).toBe(1);
+      expect(metrics.translations.streamTotal).toBe(1);
+      expect(metrics.translations.totalChunks).toBeGreaterThan(1);
+      expect(metrics.translations.averageFirstChunkMs).toBeGreaterThanOrEqual(0);
+      expect(metrics.translations.averageDurationMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      await streamApp.store.waitForMetrics();
+      await rm(streamDir, { recursive: true, force: true });
     }
   });
 

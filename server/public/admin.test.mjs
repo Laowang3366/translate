@@ -13,6 +13,19 @@ describe('admin dashboard translation usage chart', () => {
     expect(html).toContain('polyline');
   });
 
+  it('renders translation cache and latency summary fields', async () => {
+    const html = await readFile(path.resolve('server/public/admin.html'), 'utf8');
+
+    expect(html).toContain('id="data-cache-hit-rate"');
+    expect(html).toContain('id="data-provider-request-total"');
+    expect(html).toContain('id="data-average-first-chunk-ms"');
+    expect(html).toContain('id="data-average-duration-ms"');
+    expect(html).toContain('缓存命中率');
+    expect(html).toContain('平均首段耗时');
+    expect(html).toContain('translations.cacheHitRate');
+    expect(html).toContain('translations.averageFirstChunkMs');
+  });
+
   it('keeps provider configuration in a dialog card with a custom type input', async () => {
     const html = await readFile(path.resolve('server/public/admin.html'), 'utf8');
 

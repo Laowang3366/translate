@@ -79,6 +79,26 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if ((request.method ?? 'GET').toUpperCase() === 'POST' && pathname === '/api/translate/stream') {
+    const result = await app.prepareTranslationStream({
+      method: request.method ?? 'GET',
+      url: request.url ?? '/',
+      headers: request.headers,
+      body: requestBody
+    });
+    response.writeHead(result.status, result.headers);
+    if (typeof result.stream === 'function') {
+      await result.stream((event) => {
+        response.write(formatServerSentEvent(event));
+      });
+      response.end();
+      return;
+    }
+
+    response.end(typeof result.body === 'string' ? result.body : JSON.stringify(result.body));
+    return;
+  }
+
   const result = await app.handleRequest({
     method: request.method ?? 'GET',
     url: request.url ?? '/',
@@ -112,6 +132,12 @@ async function readRequestBody(request) {
 }
 
 class RequestBodyTooLargeError extends Error {}
+
+function formatServerSentEvent(event) {
+  const record = event && typeof event === 'object' ? event : { type: 'message', data: event };
+  const type = typeof record.type === 'string' && record.type ? record.type : 'message';
+  return `event: ${type}\ndata: ${JSON.stringify(record)}\n\n`;
+}
 
 async function serveStaticFile(response, filePath, contentType) {
   try {

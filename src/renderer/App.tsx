@@ -42,7 +42,7 @@ import {
   type DesktopSettings
 } from '../desktop/desktopSettings';
 import { clearAccountSession, loadAccountSession, saveAccountSession, type AccountSession } from './accountSession';
-import { createCloudClient } from './cloudClient';
+import { createCloudClient, type TranslationStreamEvent } from './cloudClient';
 import {
   getLanguageLabel,
   languageOptions,
@@ -488,6 +488,7 @@ export function App() {
   const [status, setStatus] = useState<TranslationStatus>('idle');
   const [error, setError] = useState('');
   const [result, setResult] = useState<TranslateTextResult | null>(null);
+  const [translationProgress, setTranslationProgress] = useState('');
   const [copyNotice, setCopyNotice] = useState<CopyNotice | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>('translate');
   const [historyEntries, setHistoryEntries] = useState<TranslationEntry[]>(loadHistoryEntries);
@@ -871,13 +872,42 @@ export function App() {
     translationRequestId.current = requestId;
     setStatus('loading');
     setError('');
+    setResult(null);
+    setTranslationProgress('');
     setCopyNotice(null);
     setActiveView('translate');
 
     try {
+      const streamedChunks = new Map<number, string>();
+      const handleStreamEvent = (event: TranslationStreamEvent) => {
+        if (requestId !== translationRequestId.current) {
+          return;
+        }
+
+        if (event.type === 'start') {
+          setTranslationProgress(event.totalChunks > 1 ? `准备分段翻译，共 ${event.totalChunks} 段` : '正在翻译');
+          return;
+        }
+
+        if (event.type === 'chunk') {
+          streamedChunks.set(event.chunkIndex, event.translatedText);
+          const partialText = Array.from({ length: event.chunkCount }, (_item, index) => streamedChunks.get(index + 1) || '')
+            .filter(Boolean)
+            .join('\n\n');
+          setResult({
+            provider: 'openai-compatible',
+            sourceText: normalizedText,
+            translatedText: partialText,
+            targetLanguage: language
+          });
+          setTranslationProgress(
+            `已完成 ${streamedChunks.size}/${event.chunkCount} 段${event.fromCache ? ' · 命中缓存' : ''}`
+          );
+        }
+      };
       const translation = window.quickTranslate?.translateText
         ? await window.quickTranslate.translateText({ text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat })
-        : await translateWithCloudFallback(normalizedText, language, effectiveFormat);
+        : await translateWithCloudFallback(normalizedText, language, effectiveFormat, handleStreamEvent);
 
       if (requestId !== translationRequestId.current) {
         return;
@@ -896,6 +926,7 @@ export function App() {
       setLastEntryId(entry.id);
       setHistoryEntries((entries) => [entry, ...entries].slice(0, 50));
       setStatus('success');
+      setTranslationProgress('');
     } catch (translationError) {
       if (requestId !== translationRequestId.current) {
         return;
@@ -903,6 +934,7 @@ export function App() {
 
       setStatus('error');
       setError(translationError instanceof Error ? translationError.message : '翻译失败');
+      setTranslationProgress('');
     }
   }
 
@@ -1549,8 +1581,16 @@ export function App() {
     setIsUpdateDialogDismissed(true);
   }
 
-  async function translateWithCloudFallback(text: string, language: string, format: TranslationFormat) {
+  async function translateWithCloudFallback(
+    text: string,
+    language: string,
+    format: TranslationFormat,
+    onStreamEvent?: (event: TranslationStreamEvent) => void
+  ) {
     try {
+      if (onStreamEvent) {
+        return await cloudClient.translateStream({ text, targetLanguage: language, translationFormat: format }, onStreamEvent);
+      }
       return await cloudClient.translate({ text, targetLanguage: language, translationFormat: format });
     } catch {
       return translateText({
@@ -2005,6 +2045,7 @@ export function App() {
 
                     <div className="result-body">
                       {status === 'error' ? <p className="error-message">{error}</p> : null}
+                      {translationProgress ? <p className="stream-progress">{translationProgress}</p> : null}
                       {result ? <p className="translated-text">{result.translatedText}</p> : null}
                       {!result && status !== 'error' ? <p className="empty-state">翻译结果会显示在这里</p> : null}
                     </div>

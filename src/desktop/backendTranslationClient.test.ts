@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultQuickTranslateBackendBaseUrl } from '../shared/cloudEndpoint';
 import { resolveDesktopBackendBaseUrl, translateWithBackend } from './backendTranslationClient';
 
 describe('desktop backend translation client', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('uses the hosted backend channel by default', () => {
     expect(resolveDesktopBackendBaseUrl({})).toBe(defaultQuickTranslateBackendBaseUrl);
   });
@@ -57,5 +61,32 @@ describe('desktop backend translation client', () => {
         }
       )
     ).rejects.toThrow('服务器翻译通道未启用');
+  });
+
+  it('keeps the default request timeout aligned with backend long-text budget', async () => {
+    vi.useFakeTimers();
+    const pendingRequest = translateWithBackend(
+      {
+        text: 'long text',
+        targetLanguage: 'zh-CN'
+      },
+      {
+        fetcher: async (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(new DOMException('aborted', 'AbortError'));
+            });
+          })
+      }
+    );
+
+    await vi.advanceTimersByTimeAsync(94_999);
+    const stillPending = vi.fn();
+    pendingRequest.catch(stillPending);
+    await Promise.resolve();
+    expect(stillPending).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pendingRequest).rejects.toThrow('后台翻译通道请求超时，请稍后重试');
   });
 });

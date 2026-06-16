@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -11,6 +11,13 @@ const jsonHeaders = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
   'access-control-allow-headers': 'content-type,authorization'
+};
+
+const eventStreamHeaders = {
+  ...jsonHeaders,
+  'content-type': 'text/event-stream; charset=utf-8',
+  'cache-control': 'no-cache',
+  connection: 'keep-alive'
 };
 
 const defaultUserState = {
@@ -36,6 +43,9 @@ const longTranslationChunkConcurrency = 2;
 const maxPublicTranslationResponseMs = 95_000;
 const maxSingleTranslationProviderTimeoutMs = 90_000;
 const maxChunkTranslationProviderTimeoutMs = 45_000;
+const maxTranslationCacheEntries = 1_000;
+const translationMetaSymbol = Symbol('quickTranslateTranslationMeta');
+const chunkMetaSymbol = Symbol('quickTranslateChunkMeta');
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -46,7 +56,23 @@ const defaultMetrics = {
   translations: {
     total: 0,
     byDay: {},
-    latestAt: ''
+    latestAt: '',
+    streamTotal: 0,
+    longTextTotal: 0,
+    providerRequests: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    cachedChunks: 0,
+    savedProviderRequests: 0,
+    totalChunks: 0,
+    completedTotal: 0,
+    failedTotal: 0,
+    durationMsTotal: 0,
+    firstChunkMsTotal: 0,
+    averageDurationMs: 0,
+    averageFirstChunkMs: 0,
+    cacheHitRate: 0,
+    byError: {}
   },
   downloads: {
     total: 0,
@@ -55,6 +81,9 @@ const defaultMetrics = {
     byFileName: {},
     latestAt: ''
   }
+};
+const defaultTranslationCache = {
+  entries: {}
 };
 const providerModelListTimeoutMs = 15_000;
 
@@ -232,6 +261,7 @@ export function createBackendApp(options = {}) {
           result = await translateTextWithBackendGuards({
             translateText,
             logger,
+            store,
             text,
             targetLanguage: stringOrEmpty(body.targetLanguage) || 'zh-CN',
             translationFormat: stringOrEmpty(body.translationFormat) || 'plain',
@@ -246,7 +276,7 @@ export function createBackendApp(options = {}) {
           });
           throw createTranslationHttpError(error);
         }
-        await store.recordTranslationEvent();
+        await store.recordTranslationEvent(readTranslationMeta(result));
         return createJsonResponse(200, result);
       }
 
@@ -344,7 +374,76 @@ export function createBackendApp(options = {}) {
     });
   }
 
-  return { handleRequest, store };
+  async function prepareTranslationStream(request) {
+    const method = request.method.toUpperCase();
+    const url = new URL(request.url, 'http://localhost');
+    const pathname = normalizeBackendPath(url.pathname);
+
+    void store.recordApiCall({ method, pathname }).catch(() => undefined);
+
+    try {
+      if (method !== 'POST' || pathname !== '/api/translate/stream') {
+        return createJsonResponse(404, { error: '接口不存在' });
+      }
+
+      const body = await readJsonBody(request);
+      const provider = await store.getProvider();
+      const text = stringOrEmpty(body.text).trim();
+      if (typeof translateText !== 'function') {
+        return createJsonResponse(501, { error: '服务器翻译通道未启用' });
+      }
+      if (text.length > maxTranslationSourceChars) {
+        throw new HttpError(400, '原文超过 30000 字符限制，请缩短后再翻译');
+      }
+
+      return {
+        status: 200,
+        headers: eventStreamHeaders,
+        stream: async (emit) => {
+          const startedAt = Date.now();
+          try {
+            const result = await translateTextWithBackendGuards({
+              translateText,
+              logger,
+              store,
+              stream: true,
+              text,
+              targetLanguage: stringOrEmpty(body.targetLanguage) || 'zh-CN',
+              translationFormat: stringOrEmpty(body.translationFormat) || 'plain',
+              provider,
+              timeoutMs: provider.requestTimeoutMinutes * 60_000,
+              onStart: (event) => emit({ type: 'start', ...event }),
+              onChunkTranslated: (event) => emit({ type: 'chunk', ...event })
+            });
+            await store.recordTranslationEvent(readTranslationMeta(result));
+            await emit({ type: 'done', result });
+          } catch (error) {
+            logTranslationError(logger, {
+              error,
+              provider,
+              durationMs: Date.now() - startedAt
+            });
+            const httpError = createTranslationHttpError(error);
+            await store.recordTranslationEvent(createTranslationFailureMeta({
+              text,
+              stream: true,
+              startedAt,
+              error: httpError
+            }));
+            await emit({ type: 'error', status: httpError.status, error: httpError.message });
+          }
+        }
+      };
+    } catch (error) {
+      if (error instanceof HttpError) {
+        return createJsonResponse(error.status, { error: error.message });
+      }
+
+      return createJsonResponse(500, { error: '服务器内部错误' });
+    }
+  }
+
+  return { handleRequest, prepareTranslationStream, store };
 }
 
 function normalizeBackendPath(pathname) {
@@ -361,6 +460,7 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     provider: path.join(dataDir, 'provider.json'),
     downloads: path.join(dataDir, 'downloads.json'),
     metrics: path.join(dataDir, 'metrics.json'),
+    translationCache: path.join(dataDir, 'translation-cache.json'),
     notifications: path.join(dataDir, 'notifications.json'),
     updateFailureReports: path.join(dataDir, 'update-failure-reports.json'),
     updateFailureReportLog: path.join(dataDir, 'update-failure-reports.log')
@@ -373,6 +473,7 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     provider: createJsonFile(paths.provider, undefined),
     downloads: createJsonFile(paths.downloads, defaultDownloadManifest),
     metrics: createJsonFile(paths.metrics, defaultMetrics),
+    translationCache: createJsonFile(paths.translationCache, defaultTranslationCache),
     notifications: createJsonFile(paths.notifications, defaultNotifications),
     updateFailureReports: createJsonFile(paths.updateFailureReports, defaultUpdateFailureReports)
   };
@@ -619,6 +720,43 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     async recordTranslationEvent(event) {
       return files.metrics.update((value) => incrementTranslationMetrics(value, event));
     },
+    async getTranslationCacheEntry(key) {
+      const cache = normalizeTranslationCache(await files.translationCache.read());
+      const entry = cache.entries[stringOrEmpty(key)];
+      return entry ? cloneJson(entry) : null;
+    },
+    async saveTranslationCacheEntry(entry) {
+      await files.translationCache.update((value) => {
+        const cache = normalizeTranslationCache(value);
+        const normalizedEntry = normalizeTranslationCacheEntry(entry);
+        if (!normalizedEntry.key) {
+          return cache;
+        }
+
+        cache.entries[normalizedEntry.key] = normalizedEntry;
+        return trimTranslationCache(cache);
+      });
+    },
+    async touchTranslationCacheEntry(key) {
+      let touchedEntry = null;
+      await files.translationCache.update((value) => {
+        const cache = normalizeTranslationCache(value);
+        const normalizedKey = stringOrEmpty(key);
+        const entry = cache.entries[normalizedKey];
+        if (!entry) {
+          return cache;
+        }
+
+        touchedEntry = {
+          ...entry,
+          hitCount: nonNegativeNumber(entry.hitCount) + 1,
+          lastUsedAt: new Date().toISOString()
+        };
+        cache.entries[normalizedKey] = touchedEntry;
+        return cache;
+      });
+      return touchedEntry ? cloneJson(touchedEntry) : null;
+    },
     async recordDownloadEvent(event) {
       return files.metrics.update((value) => incrementDownloadMetrics(value, event));
     },
@@ -810,26 +948,55 @@ async function translateTextWithBackendGuards(input) {
   const deadlineAt = Date.now() + maxPublicTranslationResponseMs;
   const repeatedPlan = createRepeatedSemanticTranslationPlan(input.text, input.translationFormat);
   if (repeatedPlan) {
-    return translateRepeatedSemanticUnits({
+    const stats = createTranslationRuntimeStats({
+      text: input.text,
+      stream: input.stream,
+      totalChunks: repeatedPlan.uniqueUnits.length
+    });
+    await input.onStart?.({
+      totalChunks: repeatedPlan.uniqueUnits.length,
+      sourceLength: input.text.length,
+      mode: 'repeated'
+    });
+    const result = await translateRepeatedSemanticUnits({
       ...input,
       deadlineAt,
+      stats,
       repeatedPlan
     });
+    return attachTranslationMeta(result, stats);
   }
 
   const chunks = shouldChunkTranslation(input.text, input.translationFormat)
     ? splitTextIntoSemanticChunks(input.text, longTranslationChunkChars)
     : [input.text];
+  const stats = createTranslationRuntimeStats({
+    text: input.text,
+    stream: input.stream,
+    totalChunks: chunks.length
+  });
+  await input.onStart?.({
+    totalChunks: chunks.length,
+    sourceLength: input.text.length,
+    mode: chunks.length > 1 ? 'chunked' : 'single'
+  });
 
   if (chunks.length === 1) {
-    return translateChunkWithQualityRetry({
+    const result = await translateChunkWithQualityRetry({
       ...input,
+      stats,
       deadlineAt,
       text: chunks[0],
       chunkIndex: 1,
       chunkCount: 1,
       contextInstruction: ''
     });
+    await emitTranslatedChunk(input, stats, {
+      chunkIndex: 1,
+      chunkCount: 1,
+      result
+    });
+    return attachTranslationMeta(result, stats);
   }
 
   const translatedChunks = new Array(chunks.length);
@@ -843,6 +1010,7 @@ async function translateTextWithBackendGuards(input) {
         nextChunkIndex += 1;
         const result = await translateChunkWithQualityRetry({
           ...input,
+          stats,
           deadlineAt,
           text: chunks[index],
           chunkIndex: index + 1,
@@ -851,17 +1019,22 @@ async function translateTextWithBackendGuards(input) {
         });
         results[index] = result;
         translatedChunks[index] = result.translatedText;
+        await emitTranslatedChunk(input, stats, {
+          chunkIndex: index + 1,
+          chunkCount: chunks.length,
+          result
+        });
       }
     })
   );
 
   const lastResult = results.find(Boolean);
-  return {
+  return attachTranslationMeta({
     provider: lastResult?.provider ?? 'openai-compatible',
     sourceText: input.text,
     targetLanguage: input.targetLanguage,
     translatedText: translatedChunks.join('\n\n')
-  };
+  }, stats);
 }
 
 async function translateRepeatedSemanticUnits(input) {
@@ -889,7 +1062,7 @@ async function translateRepeatedSemanticUnits(input) {
   );
 
   const lastResult = results.find(Boolean);
-  return {
+  const expandedResult = {
     provider: lastResult?.provider ?? 'openai-compatible',
     sourceText: input.text,
     targetLanguage: input.targetLanguage,
@@ -898,9 +1071,34 @@ async function translateRepeatedSemanticUnits(input) {
       .join('')
       .trim()
   };
+  await emitTranslatedChunk(input, input.stats, {
+    chunkIndex: 1,
+    chunkCount: 1,
+    result: expandedResult
+  });
+  return expandedResult;
 }
 
 async function translateChunkWithQualityRetry(input) {
+  const cacheKey = createTranslationCacheKey(input);
+  if (input.store && cacheKey) {
+    const cachedEntry = await input.store.getTranslationCacheEntry(cacheKey);
+    if (cachedEntry?.translatedText) {
+      await input.store.touchTranslationCacheEntry(cacheKey);
+      input.stats.cacheHits += 1;
+      input.stats.cachedChunks += 1;
+      const result = {
+        provider: cachedEntry.provider || 'openai-compatible',
+        sourceText: input.text,
+        translatedText: cachedEntry.translatedText,
+        targetLanguage: input.targetLanguage
+      };
+      result[chunkMetaSymbol] = { fromCache: true };
+      return result;
+    }
+    input.stats.cacheMisses += 1;
+  }
+
   let lastResult = null;
   for (let attempt = 1; attempt <= maxTranslationQualityAttempts; attempt += 1) {
     const startedAt = Date.now();
@@ -908,6 +1106,7 @@ async function translateChunkWithQualityRetry(input) {
     if (timeoutMs < 1_000) {
       throw new HttpError(408, '翻译接口请求超时，请稍后重试');
     }
+    input.stats.providerRequests += 1;
     const result = await input.translateText({
       text: input.text,
       targetLanguage: input.targetLanguage,
@@ -925,6 +1124,22 @@ async function translateChunkWithQualityRetry(input) {
     });
 
     if (!qualityIssue) {
+      result[chunkMetaSymbol] = { fromCache: false };
+      if (input.store && cacheKey) {
+        await input.store.saveTranslationCacheEntry({
+          key: cacheKey,
+          sourceHash: hashString(input.text),
+          providerHash: hashString(providerCacheIdentity(input.provider)),
+          provider: result.provider,
+          targetLanguage: input.targetLanguage,
+          translationFormat: stringOrEmpty(input.translationFormat) || 'plain',
+          translatedText: result.translatedText,
+          createdAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString(),
+          hitCount: 0,
+          durationMs: Date.now() - startedAt
+        });
+      }
       return result;
     }
 
@@ -953,6 +1168,116 @@ function buildChunkContextInstruction(chunkIndex, chunkCount) {
 
 function buildRepeatedUnitContextInstruction(unitIndex, unitCount) {
   return `重复文本优化翻译：这是第 ${unitIndex} 个唯一语义单元，共 ${unitCount} 个。只翻译当前句子，不要解释，不要添加编号。`;
+}
+
+function createTranslationRuntimeStats(input) {
+  return {
+    startedAt: Date.now(),
+    sourceLength: stringOrEmpty(input.text).length,
+    totalChunks: Math.max(1, nonNegativeNumber(input.totalChunks)),
+    stream: input.stream === true,
+    longText: stringOrEmpty(input.text).length > longTranslationChunkChars,
+    providerRequests: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    cachedChunks: 0,
+    chunksCompleted: 0,
+    firstChunkMs: 0,
+    failed: false,
+    error: ''
+  };
+}
+
+async function emitTranslatedChunk(input, stats, event) {
+  stats.chunksCompleted += 1;
+  if (!stats.firstChunkMs) {
+    stats.firstChunkMs = Date.now() - stats.startedAt;
+  }
+
+  if (typeof input.onChunkTranslated !== 'function') {
+    return;
+  }
+
+  await input.onChunkTranslated({
+    chunkIndex: event.chunkIndex,
+    chunkCount: event.chunkCount,
+    progress: Math.round((stats.chunksCompleted / Math.max(1, stats.totalChunks)) * 100),
+    translatedText: event.result.translatedText,
+    fromCache: readChunkMeta(event.result).fromCache === true
+  });
+}
+
+function attachTranslationMeta(result, stats) {
+  result[translationMetaSymbol] = {
+    sourceLength: stats.sourceLength,
+    totalChunks: stats.totalChunks,
+    stream: stats.stream,
+    longText: stats.longText,
+    providerRequests: stats.providerRequests,
+    cacheHits: stats.cacheHits,
+    cacheMisses: stats.cacheMisses,
+    cachedChunks: stats.cachedChunks,
+    savedProviderRequests: stats.cacheHits,
+    firstChunkMs: stats.firstChunkMs || Date.now() - stats.startedAt,
+    durationMs: Date.now() - stats.startedAt,
+    failed: false
+  };
+  return result;
+}
+
+function readTranslationMeta(result) {
+  return isRecord(result?.[translationMetaSymbol]) ? result[translationMetaSymbol] : {};
+}
+
+function readChunkMeta(result) {
+  return isRecord(result?.[chunkMetaSymbol]) ? result[chunkMetaSymbol] : {};
+}
+
+function createTranslationFailureMeta(input) {
+  const startedAt = Number.isFinite(input.startedAt) ? input.startedAt : Date.now();
+  return {
+    sourceLength: stringOrEmpty(input.text).length,
+    totalChunks: 0,
+    stream: input.stream === true,
+    longText: stringOrEmpty(input.text).length > longTranslationChunkChars,
+    providerRequests: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    cachedChunks: 0,
+    savedProviderRequests: 0,
+    firstChunkMs: 0,
+    durationMs: Date.now() - startedAt,
+    failed: true,
+    error: safeTranslationErrorMessage(input.error)
+  };
+}
+
+function createTranslationCacheKey(input) {
+  if (!input.store) {
+    return '';
+  }
+
+  return hashString(
+    JSON.stringify({
+      text: input.text,
+      targetLanguage: input.targetLanguage,
+      translationFormat: stringOrEmpty(input.translationFormat) || 'plain',
+      provider: providerCacheIdentity(input.provider)
+    })
+  );
+}
+
+function providerCacheIdentity(provider) {
+  const record = isRecord(provider) ? provider : {};
+  return JSON.stringify({
+    providerType: stringOrEmpty(record.providerType || record.type),
+    baseUrl: stringOrEmpty(record.baseUrl).replace(/\/$/, ''),
+    model: stringOrEmpty(record.model)
+  });
+}
+
+function hashString(value) {
+  return createHash('sha256').update(stringOrEmpty(value)).digest('hex');
 }
 
 function translationQualityIssue(input) {
@@ -1568,6 +1893,44 @@ function redactProviderState(providerState) {
   };
 }
 
+function normalizeTranslationCache(value) {
+  const record = isRecord(value) ? value : {};
+  const rawEntries = isRecord(record.entries) ? record.entries : {};
+  const entries = {};
+  Object.entries(rawEntries).forEach(([key, entry]) => {
+    const normalizedEntry = normalizeTranslationCacheEntry({ ...(isRecord(entry) ? entry : {}), key });
+    if (normalizedEntry.key && normalizedEntry.translatedText) {
+      entries[normalizedEntry.key] = normalizedEntry;
+    }
+  });
+
+  return { entries };
+}
+
+function normalizeTranslationCacheEntry(value) {
+  const record = isRecord(value) ? value : {};
+  return {
+    key: stringOrEmpty(record.key),
+    sourceHash: stringOrEmpty(record.sourceHash),
+    providerHash: stringOrEmpty(record.providerHash),
+    provider: stringOrEmpty(record.provider) || 'openai-compatible',
+    targetLanguage: stringOrEmpty(record.targetLanguage),
+    translationFormat: stringOrEmpty(record.translationFormat) || 'plain',
+    translatedText: stringOrEmpty(record.translatedText),
+    createdAt: stringOrEmpty(record.createdAt) || new Date().toISOString(),
+    lastUsedAt: stringOrEmpty(record.lastUsedAt) || stringOrEmpty(record.createdAt) || new Date().toISOString(),
+    hitCount: nonNegativeNumber(record.hitCount),
+    durationMs: nonNegativeNumber(record.durationMs)
+  };
+}
+
+function trimTranslationCache(cache) {
+  const entries = Object.entries(normalizeTranslationCache(cache).entries)
+    .sort((left, right) => stringOrEmpty(right[1].lastUsedAt).localeCompare(stringOrEmpty(left[1].lastUsedAt)))
+    .slice(0, maxTranslationCacheEntries);
+  return { entries: Object.fromEntries(entries) };
+}
+
 function normalizeMetrics(value) {
   const record = isRecord(value) ? value : {};
   const apiCalls = isRecord(record.apiCalls) ? record.apiCalls : {};
@@ -1584,7 +1947,23 @@ function normalizeMetrics(value) {
     translations: {
       total: nonNegativeNumber(translations.total),
       byDay: normalizeCounterRecord(translations.byDay),
-      latestAt: stringOrEmpty(translations.latestAt)
+      latestAt: stringOrEmpty(translations.latestAt),
+      streamTotal: nonNegativeNumber(translations.streamTotal),
+      longTextTotal: nonNegativeNumber(translations.longTextTotal),
+      providerRequests: nonNegativeNumber(translations.providerRequests),
+      cacheHits: nonNegativeNumber(translations.cacheHits),
+      cacheMisses: nonNegativeNumber(translations.cacheMisses),
+      cachedChunks: nonNegativeNumber(translations.cachedChunks),
+      savedProviderRequests: nonNegativeNumber(translations.savedProviderRequests),
+      totalChunks: nonNegativeNumber(translations.totalChunks),
+      completedTotal: nonNegativeNumber(translations.completedTotal),
+      failedTotal: nonNegativeNumber(translations.failedTotal),
+      durationMsTotal: nonNegativeNumber(translations.durationMsTotal),
+      firstChunkMsTotal: nonNegativeNumber(translations.firstChunkMsTotal),
+      averageDurationMs: nonNegativeNumber(translations.averageDurationMs),
+      averageFirstChunkMs: nonNegativeNumber(translations.averageFirstChunkMs),
+      cacheHitRate: nonNegativeNumber(translations.cacheHitRate),
+      byError: normalizeCounterRecord(translations.byError)
     },
     downloads: {
       total: nonNegativeNumber(downloads.total),
@@ -1613,11 +1992,48 @@ function incrementTranslationMetrics(value, event = {}) {
   const metrics = normalizeMetrics(value);
   const now = event.now instanceof Date ? event.now : new Date();
   const day = formatMetricDay(now);
+  const failed = event.failed === true;
 
   metrics.translations.total += 1;
   incrementCounter(metrics.translations.byDay, day);
   metrics.translations.latestAt = now.toISOString();
+  if (event.stream === true) {
+    metrics.translations.streamTotal += 1;
+  }
+  if (event.longText === true) {
+    metrics.translations.longTextTotal += 1;
+  }
+  if (failed) {
+    metrics.translations.failedTotal += 1;
+    incrementCounter(metrics.translations.byError, stringOrEmpty(event.error) || 'unknown');
+  } else {
+    metrics.translations.completedTotal += 1;
+  }
+  metrics.translations.providerRequests += nonNegativeNumber(event.providerRequests);
+  metrics.translations.cacheHits += nonNegativeNumber(event.cacheHits);
+  metrics.translations.cacheMisses += nonNegativeNumber(event.cacheMisses);
+  metrics.translations.cachedChunks += nonNegativeNumber(event.cachedChunks);
+  metrics.translations.savedProviderRequests += nonNegativeNumber(event.savedProviderRequests);
+  metrics.translations.totalChunks += nonNegativeNumber(event.totalChunks);
+  metrics.translations.durationMsTotal += nonNegativeNumber(event.durationMs);
+  metrics.translations.firstChunkMsTotal += nonNegativeNumber(event.firstChunkMs);
+  metrics.translations.averageDurationMs = averageMetric(
+    metrics.translations.durationMsTotal,
+    Math.max(1, metrics.translations.completedTotal + metrics.translations.failedTotal)
+  );
+  metrics.translations.averageFirstChunkMs = averageMetric(
+    metrics.translations.firstChunkMsTotal,
+    Math.max(1, metrics.translations.completedTotal + metrics.translations.failedTotal)
+  );
+  metrics.translations.cacheHitRate = averageMetric(
+    metrics.translations.cacheHits,
+    Math.max(1, metrics.translations.cacheHits + metrics.translations.cacheMisses)
+  );
   return metrics;
+}
+
+function averageMetric(total, count) {
+  return Math.round((nonNegativeNumber(total) / Math.max(1, nonNegativeNumber(count))) * 100) / 100;
 }
 
 function incrementDownloadMetrics(value, event) {
