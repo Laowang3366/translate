@@ -30,11 +30,12 @@ const beijingOffsetMs = 8 * 60 * 60 * 1000;
 const defaultProviderRequestTimeoutMinutes = 5;
 const maxProviderRequestTimeoutMinutes = 30;
 const maxTranslationSourceChars = 30_000;
-const longTranslationChunkChars = 4_000;
+const longTranslationChunkChars = 5_000;
 const maxTranslationQualityAttempts = 2;
-const longTranslationChunkConcurrency = 3;
+const longTranslationChunkConcurrency = 2;
+const maxPublicTranslationResponseMs = 95_000;
 const maxSingleTranslationProviderTimeoutMs = 90_000;
-const maxChunkTranslationProviderTimeoutMs = 30_000;
+const maxChunkTranslationProviderTimeoutMs = 45_000;
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -806,6 +807,7 @@ function createTranslationHttpError(error) {
 }
 
 async function translateTextWithBackendGuards(input) {
+  const deadlineAt = Date.now() + maxPublicTranslationResponseMs;
   const chunks = shouldChunkTranslation(input.text, input.translationFormat)
     ? splitTextIntoSemanticChunks(input.text, longTranslationChunkChars)
     : [input.text];
@@ -813,6 +815,7 @@ async function translateTextWithBackendGuards(input) {
   if (chunks.length === 1) {
     return translateChunkWithQualityRetry({
       ...input,
+      deadlineAt,
       text: chunks[0],
       chunkIndex: 1,
       chunkCount: 1,
@@ -831,6 +834,7 @@ async function translateTextWithBackendGuards(input) {
         nextChunkIndex += 1;
         const result = await translateChunkWithQualityRetry({
           ...input,
+          deadlineAt,
           text: chunks[index],
           chunkIndex: index + 1,
           chunkCount: chunks.length,
@@ -855,13 +859,17 @@ async function translateChunkWithQualityRetry(input) {
   let lastResult = null;
   for (let attempt = 1; attempt <= maxTranslationQualityAttempts; attempt += 1) {
     const startedAt = Date.now();
+    const timeoutMs = effectiveTranslationTimeoutMs(input.timeoutMs, input.chunkCount, input.deadlineAt);
+    if (timeoutMs < 1_000) {
+      throw new HttpError(408, '翻译接口请求超时，请稍后重试');
+    }
     const result = await input.translateText({
       text: input.text,
       targetLanguage: input.targetLanguage,
       translationFormat: input.translationFormat,
       contextInstruction: input.contextInstruction,
       provider: input.provider,
-      timeoutMs: effectiveTranslationTimeoutMs(input.timeoutMs, input.chunkCount),
+      timeoutMs,
       maxRetries: 0
     });
     lastResult = result;
@@ -1026,10 +1034,11 @@ function inferTranslationErrorStatus(error) {
   return 422;
 }
 
-function effectiveTranslationTimeoutMs(timeoutMs, chunkCount) {
+function effectiveTranslationTimeoutMs(timeoutMs, chunkCount, deadlineAt) {
   const configuredTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : maxSingleTranslationProviderTimeoutMs;
   const cap = chunkCount > 1 ? maxChunkTranslationProviderTimeoutMs : maxSingleTranslationProviderTimeoutMs;
-  return Math.min(configuredTimeoutMs, cap);
+  const remainingBudgetMs = Number.isFinite(deadlineAt) ? deadlineAt - Date.now() - 1_000 : cap;
+  return Math.min(configuredTimeoutMs, cap, Math.max(0, remainingBudgetMs));
 }
 
 function logTranslationError(logger, input) {
