@@ -16,6 +16,14 @@ function repeatedSentence(count, sentence = 'Hello, welcome to Quick Translate. 
   return Array.from({ length: count }, () => sentence).join(' ');
 }
 
+function variedSentence(count) {
+  return Array.from(
+    { length: count },
+    (_item, index) =>
+      `Paragraph ${index + 1}: Quick Translate keeps context stable for feature ${index + 1} and translates this unique sentence completely.`
+  ).join(' ');
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-'));
   app = createBackendApp({
@@ -852,7 +860,7 @@ describe('backend app', () => {
         url: '/api/translate',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          text: repeatedSentence(140),
+          text: variedSentence(140),
           targetLanguage: 'zh-CN',
           translationFormat: 'plain'
         })
@@ -911,7 +919,7 @@ describe('backend app', () => {
         url: '/api/translate',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          text: repeatedSentence(180),
+          text: variedSentence(180),
           targetLanguage: 'zh-CN',
           translationFormat: 'plain'
         })
@@ -924,6 +932,60 @@ describe('backend app', () => {
     } finally {
       await chunkApp.store.waitForMetrics();
       await rm(chunkDir, { recursive: true, force: true });
+    }
+  });
+
+  it('translates highly repeated long text by translating each unique sentence once', async () => {
+    const calls = [];
+    const repeatedDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-repeated-text-'));
+    const repeatedApp = createBackendApp({
+      dataDir: repeatedDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      translateText: async (input) => {
+        calls.push(input);
+        if (input.text.length > 1_000) {
+          throw new Error('provider rejected long repeated chunk');
+        }
+        return {
+          sourceText: input.text,
+          targetLanguage: input.targetLanguage,
+          translatedText: '你好，欢迎使用快捷翻译。',
+          provider: input.provider.providerType
+        };
+      }
+    });
+
+    try {
+      const sentence = 'Hello, welcome to Quick Translate.';
+      const response = await repeatedApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: repeatedSentence(500, sentence),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].text).toBe(sentence);
+      expect(response.body.translatedText).toBe(
+        Array.from({ length: 500 }, () => '你好，欢迎使用快捷翻译。').join(' ')
+      );
+    } finally {
+      await repeatedApp.store.waitForMetrics();
+      await rm(repeatedDir, { recursive: true, force: true });
     }
   });
 

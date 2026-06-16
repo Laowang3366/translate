@@ -808,6 +808,15 @@ function createTranslationHttpError(error) {
 
 async function translateTextWithBackendGuards(input) {
   const deadlineAt = Date.now() + maxPublicTranslationResponseMs;
+  const repeatedPlan = createRepeatedSemanticTranslationPlan(input.text, input.translationFormat);
+  if (repeatedPlan) {
+    return translateRepeatedSemanticUnits({
+      ...input,
+      deadlineAt,
+      repeatedPlan
+    });
+  }
+
   const chunks = shouldChunkTranslation(input.text, input.translationFormat)
     ? splitTextIntoSemanticChunks(input.text, longTranslationChunkChars)
     : [input.text];
@@ -852,6 +861,42 @@ async function translateTextWithBackendGuards(input) {
     sourceText: input.text,
     targetLanguage: input.targetLanguage,
     translatedText: translatedChunks.join('\n\n')
+  };
+}
+
+async function translateRepeatedSemanticUnits(input) {
+  const translatedUnits = new Array(input.repeatedPlan.uniqueUnits.length);
+  const results = new Array(input.repeatedPlan.uniqueUnits.length);
+  let nextUnitIndex = 0;
+  const workerCount = Math.min(longTranslationChunkConcurrency, input.repeatedPlan.uniqueUnits.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextUnitIndex < input.repeatedPlan.uniqueUnits.length) {
+        const index = nextUnitIndex;
+        nextUnitIndex += 1;
+        const result = await translateChunkWithQualityRetry({
+          ...input,
+          text: input.repeatedPlan.uniqueUnits[index],
+          chunkIndex: index + 1,
+          chunkCount: input.repeatedPlan.uniqueUnits.length,
+          contextInstruction: buildRepeatedUnitContextInstruction(index + 1, input.repeatedPlan.uniqueUnits.length)
+        });
+        results[index] = result;
+        translatedUnits[index] = result.translatedText;
+      }
+    })
+  );
+
+  const lastResult = results.find(Boolean);
+  return {
+    provider: lastResult?.provider ?? 'openai-compatible',
+    sourceText: input.text,
+    targetLanguage: input.targetLanguage,
+    translatedText: input.repeatedPlan.sequence
+      .map((unit) => `${translatedUnits[unit.uniqueIndex]}${unit.separator}`)
+      .join('')
+      .trim()
   };
 }
 
@@ -904,6 +949,10 @@ function shouldChunkTranslation(text, translationFormat) {
 
 function buildChunkContextInstruction(chunkIndex, chunkCount) {
   return `长文本分段翻译：这是第 ${chunkIndex} 段，共 ${chunkCount} 段。保持术语、人名、上下文、语气、编号和格式一致；只输出当前段译文，不要总结，不要省略，不要解释。即使内容重复，也必须逐句逐段完整翻译，不要使用“同上”“重复内容”“省略”等概括表达。`;
+}
+
+function buildRepeatedUnitContextInstruction(unitIndex, unitCount) {
+  return `重复文本优化翻译：这是第 ${unitIndex} 个唯一语义单元，共 ${unitCount} 个。只翻译当前句子，不要解释，不要添加编号。`;
 }
 
 function translationQualityIssue(input) {
@@ -975,6 +1024,79 @@ function splitTextIntoSemanticChunks(text, maxChars) {
   }
 
   return chunks.filter(Boolean);
+}
+
+function createRepeatedSemanticTranslationPlan(text, translationFormat) {
+  if ((stringOrEmpty(translationFormat) || 'plain') !== 'plain') {
+    return null;
+  }
+
+  const sourceText = stringOrEmpty(text).trim();
+  if (sourceText.length <= longTranslationChunkChars) {
+    return null;
+  }
+
+  const units = splitIntoRepeatedSemanticUnits(sourceText);
+  if (units.length < 12) {
+    return null;
+  }
+
+  const uniqueIndexes = new Map();
+  const uniqueUnits = [];
+  const sequence = [];
+
+  units.forEach((unit) => {
+    const key = normalizeRepeatedUnit(unit.text);
+    if (!uniqueIndexes.has(key)) {
+      uniqueIndexes.set(key, uniqueUnits.length);
+      uniqueUnits.push(unit.text);
+    }
+    sequence.push({
+      uniqueIndex: uniqueIndexes.get(key),
+      separator: unit.separator
+    });
+  });
+
+  const uniqueRatio = uniqueUnits.length / units.length;
+  const maxUniqueUnits = Math.min(8, Math.max(1, Math.floor(units.length * 0.25)));
+  if (uniqueUnits.length > maxUniqueUnits || uniqueRatio > 0.25) {
+    return null;
+  }
+
+  return { uniqueUnits, sequence };
+}
+
+function splitIntoRepeatedSemanticUnits(text) {
+  const units = [];
+  const sentencePattern = /([^。！？!?；;.\n]+[。！？!?；;.]*)(\s*)/g;
+  let cursor = 0;
+  let match;
+
+  while ((match = sentencePattern.exec(text)) !== null) {
+    const gap = text.slice(cursor, match.index);
+    if (gap.trim()) {
+      return [];
+    }
+
+    const unitText = stringOrEmpty(match[1]).trim();
+    if (unitText) {
+      units.push({
+        text: unitText,
+        separator: match[2] || ''
+      });
+    }
+    cursor = match.index + match[0].length;
+  }
+
+  if (text.slice(cursor).trim()) {
+    return [];
+  }
+
+  return units;
+}
+
+function normalizeRepeatedUnit(text) {
+  return stringOrEmpty(text).replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function splitIntoSemanticUnits(text, maxChars) {
