@@ -1,5 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import { translateText } from './translator';
+import { translateText, translateTextStream } from './translator';
+
+function createStreamingResponse(records: string[]) {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        records.forEach((record) => {
+          controller.enqueue(encoder.encode(record));
+        });
+        controller.close();
+      }
+    }),
+    {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+    }
+  );
+}
 
 describe('translateText', () => {
   it('returns a deterministic mock translation without network access', async () => {
@@ -298,5 +316,70 @@ describe('translateText', () => {
         fetcher
       })
     ).rejects.toThrow('翻译接口返回了空结果');
+  });
+
+  it('streams OpenAI-compatible translation deltas before returning the final result', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      createStreamingResponse([
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"好"}}]}\n\n',
+        'data: [DONE]\n\n'
+      ])
+    );
+    const deltas: string[] = [];
+
+    const result = await translateTextStream(
+      {
+        text: 'hello',
+        targetLanguage: 'zh-CN',
+        provider: {
+          type: 'openai-compatible',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'secret',
+          model: 'gpt-4.1-mini'
+        },
+        fetcher
+      },
+      (event) => {
+        if (event.type === 'delta') {
+          deltas.push(event.text);
+        }
+      }
+    );
+
+    const [, init] = fetcher.mock.calls[0];
+    expect(JSON.parse(String(init.body))).toMatchObject({ stream: true });
+    expect(deltas).toEqual(['你', '好']);
+    expect(result).toMatchObject({
+      sourceText: 'hello',
+      translatedText: '你好',
+      targetLanguage: 'zh-CN'
+    });
+  });
+
+  it('streams OpenAI-compatible malformed payload errors as a clear Chinese message', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      createStreamingResponse([
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
+        'data: {bad json}\n\n'
+      ])
+    );
+
+    await expect(
+      translateTextStream(
+        {
+          text: 'hello',
+          targetLanguage: 'zh-CN',
+          provider: {
+            type: 'openai-compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'secret',
+            model: 'gpt-4.1-mini'
+          },
+          fetcher
+        },
+        () => undefined
+      )
+    ).rejects.toThrow('翻译接口流式返回内容无法解析，请稍后重试');
   });
 });

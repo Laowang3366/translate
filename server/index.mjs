@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackendApp } from './backend.mjs';
-import { translateText } from '../dist-electron/shared/translator.js';
+import { translateText, translateTextStream } from '../dist-electron/shared/translator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.dirname(__dirname);
@@ -27,8 +27,8 @@ const app = createBackendApp({
     model: providerModel,
     requestTimeoutMinutes: providerRequestTimeoutMinutes
   },
-  translateText: ({ text, targetLanguage, translationFormat, contextInstruction, provider, timeoutMs }) =>
-    translateText({
+  translateText: ({ text, targetLanguage, translationFormat, contextInstruction, provider, timeoutMs, onToken }) => {
+    const request = {
       text,
       targetLanguage,
       translationFormat,
@@ -40,7 +40,16 @@ const app = createBackendApp({
         apiKey: provider.apiKey,
         model: provider.model
       }
-    })
+    };
+
+    return typeof onToken === 'function'
+      ? translateTextStream(request, (event) => {
+          if (event.type === 'delta') {
+            onToken(event.text);
+          }
+        })
+      : translateText(request);
+  }
 });
 
 const server = createServer(async (request, response) => {

@@ -413,6 +413,7 @@ export function createBackendApp(options = {}) {
               provider,
               timeoutMs: provider.requestTimeoutMinutes * 60_000,
               onStart: (event) => emit({ type: 'start', ...event }),
+              onTokenTranslated: (event) => emit({ type: 'delta', ...event }),
               onChunkTranslated: (event) => emit({ type: 'chunk', ...event })
             });
             await store.recordTranslationEvent(readTranslationMeta(result));
@@ -1107,6 +1108,7 @@ async function translateChunkWithQualityRetry(input) {
       throw new HttpError(408, '翻译接口请求超时，请稍后重试');
     }
     input.stats.providerRequests += 1;
+    let streamedTranslatedText = '';
     const result = await input.translateText({
       text: input.text,
       targetLanguage: input.targetLanguage,
@@ -1114,7 +1116,23 @@ async function translateChunkWithQualityRetry(input) {
       contextInstruction: input.contextInstruction,
       provider: input.provider,
       timeoutMs,
-      maxRetries: 0
+      maxRetries: 0,
+      onToken: typeof input.onTokenTranslated === 'function'
+        ? (tokenText) => {
+            const normalizedTokenText = stringOrEmpty(tokenText);
+            if (!normalizedTokenText) {
+              return;
+            }
+
+            streamedTranslatedText += normalizedTokenText;
+            input.onTokenTranslated({
+              chunkIndex: input.chunkIndex,
+              chunkCount: input.chunkCount,
+              text: normalizedTokenText,
+              translatedText: streamedTranslatedText
+            });
+          }
+        : undefined
     });
     lastResult = result;
     const qualityIssue = translationQualityIssue({

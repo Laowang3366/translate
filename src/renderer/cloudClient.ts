@@ -51,6 +51,13 @@ export type TranslationStreamEvent =
       fromCache: boolean;
     }
   | {
+      type: 'delta';
+      chunkIndex: number;
+      chunkCount: number;
+      text: string;
+      translatedText: string;
+    }
+  | {
       type: 'done';
       result: TranslateTextResult;
     }

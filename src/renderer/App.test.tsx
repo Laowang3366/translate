@@ -49,6 +49,30 @@ describe('App', () => {
     } as Response;
   }
 
+  function createControlledEventStreamResponse() {
+    const encoder = new TextEncoder();
+    let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controllerRef = controller;
+      }
+    });
+
+    return {
+      response: {
+        ok: true,
+        body,
+        json: () => Promise.resolve({})
+      } as Response,
+      emit(event: Record<string, unknown>) {
+        controllerRef?.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+      },
+      close() {
+        controllerRef?.close();
+      }
+    };
+  }
+
   it('translates typed or pasted text through the mock provider', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
     render(<App />);
@@ -100,6 +124,43 @@ describe('App', () => {
         targetLanguage: 'zh-CN',
         translationFormat: 'plain'
       })
+    });
+  });
+
+  it('renders streaming delta text before the final cloud translation is done', async () => {
+    const stream = createControlledEventStreamResponse();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(stream.response);
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText('原文'), {
+      target: { value: 'hello' }
+    });
+    submitTranslation();
+
+    await act(async () => {
+      stream.emit({ type: 'start', totalChunks: 1, sourceLength: 5, mode: 'single' });
+      stream.emit({ type: 'delta', chunkIndex: 1, chunkCount: 1, text: '你', translatedText: '你' });
+      stream.emit({ type: 'delta', chunkIndex: 1, chunkCount: 1, text: '好', translatedText: '你好' });
+    });
+
+    expect(await screen.findByText('你好')).toBeInTheDocument();
+
+    await act(async () => {
+      stream.emit({
+        type: 'done',
+        result: {
+          provider: 'openai-compatible',
+          sourceText: 'hello',
+          translatedText: '你好',
+          targetLanguage: 'zh-CN'
+        }
+      });
+      stream.close();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('你好')).toBeInTheDocument();
     });
   });
 

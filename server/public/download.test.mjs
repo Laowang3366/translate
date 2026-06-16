@@ -17,4 +17,13 @@ describe('download page platform cards', () => {
     expect(html).toContain("latestLink.classList.add('hidden')");
     expect(html).toContain("pathname.endsWith('/download')");
   });
+
+  it('streams demo translation output through the backend token stream endpoint', async () => {
+    const html = await readFile(path.resolve('server/public/download.html'), 'utf8');
+
+    expect(html).toContain("apiUrl('/api/translate/stream')");
+    expect(html).toContain("event.type === 'delta'");
+    expect(html).toContain('event.totalChunks || chunkCount');
+    expect(html).toContain('readDemoStreamEvents');
+  });
 });

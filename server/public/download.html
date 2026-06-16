@@ -851,6 +851,75 @@
         demoTranslateTimer = window.setTimeout(runDemoTranslation, 520);
       }
 
+      function parseDemoStreamEvent(rawEvent) {
+        const dataLines = rawEvent
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim());
+        if (!dataLines.length) {
+          return null;
+        }
+        return JSON.parse(dataLines.join('\n'));
+      }
+
+      async function* readDemoStreamEvents(body) {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const records = buffer.split(/\n\n/);
+            buffer = records.pop() || '';
+            for (const record of records) {
+              const event = parseDemoStreamEvent(record);
+              if (event) {
+                yield event;
+              }
+            }
+          }
+          buffer += decoder.decode();
+          const finalEvent = parseDemoStreamEvent(buffer);
+          if (finalEvent) {
+            yield finalEvent;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+
+      async function runDemoJsonTranslation(requestId, text) {
+        const response = await fetch(apiUrl('/api/translate'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            text,
+            targetLanguage: demoTargetLanguage.value,
+            translationFormat: 'plain'
+          })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (requestId !== demoRequestId) {
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(payload.error || '翻译失败');
+        }
+        demoResult.textContent = payload.translatedText || '未返回译文';
+        demoStatus.textContent = '翻译完成。';
+      }
+
+      function updateDemoStreamedResult(streamedChunks, chunkCount) {
+        const parts = Array.from({ length: chunkCount }, (_, index) => streamedChunks.get(index + 1) || '').filter(Boolean);
+        if (parts.length) {
+          demoResult.textContent = parts.join('\n\n');
+        }
+      }
+
       async function runDemoTranslation() {
         const text = demoSource.value.trim();
         const requestId = ++demoRequestId;
@@ -861,9 +930,10 @@
           return;
         }
 
-        demoStatus.textContent = '正在翻译...';
+        demoResult.textContent = '';
+        demoStatus.textContent = '正在连接翻译通道...';
         try {
-          const response = await fetch(apiUrl('/api/translate'), {
+          const response = await fetch(apiUrl('/api/translate/stream'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -872,15 +942,54 @@
               translationFormat: 'plain'
             })
           });
-          const payload = await response.json().catch(() => ({}));
           if (requestId !== demoRequestId) {
             return;
           }
           if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
             throw new Error(payload.error || '翻译失败');
           }
-          demoResult.textContent = payload.translatedText || '未返回译文';
-          demoStatus.textContent = '翻译完成。';
+          if (!response.body) {
+            await runDemoJsonTranslation(requestId, text);
+            return;
+          }
+
+          let completed = false;
+          let chunkCount = 1;
+          const streamedChunks = new Map();
+          for await (const event of readDemoStreamEvents(response.body)) {
+            if (requestId !== demoRequestId) {
+              return;
+            }
+            if (event.type === 'start') {
+              chunkCount = event.totalChunks || chunkCount;
+              demoStatus.textContent = chunkCount > 1 ? `正在翻译 1/${chunkCount} 段...` : '正在翻译...';
+            } else if (event.type === 'delta') {
+              const chunkIndex = event.chunkIndex || 1;
+              chunkCount = event.chunkCount || chunkCount;
+              streamedChunks.set(chunkIndex, event.translatedText || '');
+              updateDemoStreamedResult(streamedChunks, chunkCount);
+              demoStatus.textContent = chunkCount > 1 ? `正在输出第 ${chunkIndex}/${chunkCount} 段...` : '正在输出译文...';
+            } else if (event.type === 'chunk') {
+              const chunkIndex = event.chunkIndex || 1;
+              chunkCount = event.chunkCount || chunkCount;
+              streamedChunks.set(chunkIndex, event.translatedText || '');
+              updateDemoStreamedResult(streamedChunks, chunkCount);
+              demoStatus.textContent = chunkCount > 1 ? `已完成第 ${chunkIndex}/${chunkCount} 段` : '正在整理译文...';
+            } else if (event.type === 'done') {
+              completed = true;
+              demoResult.textContent = event.result?.translatedText || demoResult.textContent || '未返回译文';
+              demoStatus.textContent = '翻译完成。';
+            } else if (event.type === 'error') {
+              throw new Error(event.error || '翻译失败');
+            }
+          }
+          if (!completed) {
+            demoStatus.textContent = demoResult.textContent ? '翻译完成。' : '未返回译文';
+            if (!demoResult.textContent) {
+              demoResult.textContent = '未返回译文';
+            }
+          }
         } catch (error) {
           if (requestId !== demoRequestId) {
             return;

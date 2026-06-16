@@ -10,7 +10,7 @@ import {
   translationFormatOptions,
   type TranslationFormat
 } from '../shared/translationFormats';
-import { translateText, type TranslateTextResult } from '../shared/translator';
+import { translateText, translateTextStream, type TranslateTextResult } from '../shared/translator';
 import { loadDefaultTargetLanguage, saveDefaultTargetLanguage } from './languagePreference';
 import { createProviderFromSettings } from './providerConfig';
 import { loadProviderSettings } from './providerSettingsStorage';
@@ -29,6 +29,12 @@ type FloatingPayload = {
   translationFormat?: TranslationFormat;
   captureState?: 'capturing' | 'failed';
   captureError?: string;
+};
+type FloatingStreamEvent = {
+  type: 'delta' | 'chunk';
+  chunkIndex?: number;
+  chunkCount?: number;
+  translatedText: string;
 };
 
 export function FloatingTranslateApp() {
@@ -135,14 +141,50 @@ export function FloatingTranslateApp() {
     setError('');
 
     try {
-      const translation = window.quickTranslate?.translateText
-        ? await window.quickTranslate.translateText({ text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat })
-        : await translateText({
-            text: normalizedText,
-            targetLanguage: language,
-            translationFormat: effectiveFormat,
-            provider: createProviderFromSettings(providerSettings)
-          });
+      const streamedChunks = new Map<number, string>();
+      const handleStreamEvent = (event: FloatingStreamEvent) => {
+        if (requestId !== translationRequestId.current) {
+          return;
+        }
+        if (event.type !== 'delta' && event.type !== 'chunk') {
+          return;
+        }
+
+        const chunkIndex = event.chunkIndex ?? 1;
+        const chunkCount = event.chunkCount ?? 1;
+        streamedChunks.set(chunkIndex, event.translatedText);
+        const translatedText = Array.from({ length: chunkCount }, (_item, index) => streamedChunks.get(index + 1) || '')
+          .filter(Boolean)
+          .join('\n\n');
+        setResult({
+          provider: 'openai-compatible',
+          sourceText: normalizedText,
+          translatedText,
+          targetLanguage: language
+        });
+        setLoadingMessage(chunkCount > 1 ? `正在输出第 ${chunkIndex}/${chunkCount} 段` : '正在输出译文...');
+      };
+
+      const translation = window.quickTranslate?.translateTextStream
+        ? await window.quickTranslate.translateTextStream(
+            { text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat },
+            (event) => {
+              if (event.type === 'delta' || event.type === 'chunk') {
+                handleStreamEvent(event);
+              }
+            }
+          )
+        : window.quickTranslate?.translateText
+          ? await window.quickTranslate.translateText({ text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat })
+          : await translateTextStream(
+              {
+                text: normalizedText,
+                targetLanguage: language,
+                translationFormat: effectiveFormat,
+                provider: createProviderFromSettings(providerSettings)
+              },
+              (event) => handleStreamEvent({ type: event.type, translatedText: event.translatedText })
+            );
 
       if (requestId !== translationRequestId.current) {
         return;
@@ -328,7 +370,7 @@ export function FloatingTranslateApp() {
         <section className="floating-result-card" aria-live="polite" aria-label="悬浮译文">
           {status === 'error' ? <p className="error-message">{error}</p> : null}
           {status === 'loading' ? <p className="empty-state loading-state">{loadingMessage}</p> : null}
-          {result && status !== 'loading' ? <p className="translated-text">{result.translatedText}</p> : null}
+          {result ? <p className="translated-text">{result.translatedText}</p> : null}
           {!result && status !== 'error' && status !== 'loading' ? <p className="empty-state">翻译结果会显示在这里</p> : null}
           <button type="button" aria-label="复制悬浮译文" disabled={!result?.translatedText} onClick={copyResult}>
             <Copy size={19} />

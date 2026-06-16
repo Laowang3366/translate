@@ -37,9 +37,23 @@ export type TranslateTextResult = {
   targetLanguage: string;
 };
 
+export type TranslateTextStreamEvent = {
+  type: 'delta';
+  text: string;
+  translatedText: string;
+};
+
 type OpenAICompatibleResponse = {
   choices?: Array<{
     message?: {
+      content?: string;
+    };
+  }>;
+};
+
+type OpenAICompatibleStreamResponse = {
+  choices?: Array<{
+    delta?: {
       content?: string;
     };
   }>;
@@ -114,6 +128,52 @@ export async function translateText(input: TranslateTextInput): Promise<Translat
   };
 }
 
+export async function translateTextStream(
+  input: TranslateTextInput,
+  onEvent: (event: TranslateTextStreamEvent) => void
+): Promise<TranslateTextResult> {
+  const sourceText = input.text.trim();
+
+  if (!sourceText) {
+    throw new Error('原文不能为空');
+  }
+
+  if (input.provider.type === 'mock') {
+    const translatedText = translateWithMock(sourceText, input.targetLanguage, input.translationFormat);
+    onEvent({ type: 'delta', text: translatedText, translatedText });
+    return {
+      provider: 'mock',
+      sourceText,
+      translatedText,
+      targetLanguage: input.targetLanguage
+    };
+  }
+
+  const fetcher = input.fetcher ?? globalThis.fetch;
+  if (!fetcher) {
+    throw new Error('当前运行环境不支持网络请求');
+  }
+
+  const translatedText = await translateWithOpenAICompatibleProviderStream({
+    sourceText,
+    targetLanguage: input.targetLanguage,
+    translationFormat: input.translationFormat,
+    contextInstruction: input.contextInstruction,
+    provider: input.provider,
+    fetcher,
+    timeoutMs: input.timeoutMs,
+    maxRetries: input.maxRetries,
+    onEvent
+  });
+
+  return {
+    provider: 'openai-compatible',
+    sourceText,
+    translatedText,
+    targetLanguage: input.targetLanguage
+  };
+}
+
 function translateWithMock(sourceText: string, targetLanguage: string, translationFormat = defaultTranslationFormat): string {
   const formattedText = formatMockTranslation(sourceText, translationFormat);
   if (formattedText) {
@@ -156,6 +216,36 @@ async function translateWithOpenAICompatibleProvider(input: {
   throw lastError ?? new Error('翻译接口请求失败，请稍后重试');
 }
 
+async function translateWithOpenAICompatibleProviderStream(input: {
+  sourceText: string;
+  targetLanguage: string;
+  translationFormat?: TranslationFormat;
+  contextInstruction?: string;
+  provider: OpenAICompatibleProvider;
+  fetcher: typeof fetch;
+  timeoutMs?: number;
+  maxRetries?: number;
+  onEvent: (event: TranslateTextStreamEvent) => void;
+}): Promise<string> {
+  const maxRetries = normalizeNonNegativeInteger(input.maxRetries, defaultMaxRetries);
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await requestOpenAICompatibleTranslationStream(input);
+    } catch (error) {
+      const normalizedError = normalizeTranslationError(error);
+      lastError = normalizedError;
+
+      if (!shouldRetryTranslationError(normalizedError, attempt, maxRetries)) {
+        throw normalizedError;
+      }
+    }
+  }
+
+  throw lastError ?? new Error('翻译接口请求失败，请稍后重试');
+}
+
 async function requestOpenAICompatibleTranslation(input: {
   sourceText: string;
   targetLanguage: string;
@@ -170,33 +260,13 @@ async function requestOpenAICompatibleTranslation(input: {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const targetLanguageName = getLanguageLabel(input.targetLanguage);
-    const translationFormat = getTranslationFormatOption(
-      normalizeTranslationFormat(input.translationFormat)
-    ) ?? getTranslationFormatOption(defaultTranslationFormat)!;
-    const systemPrompt =
-      translationFormat.value === 'plain'
-        ? `Translate the user text into ${targetLanguageName} (${input.targetLanguage}). ${translationFormat.instruction}`
-        : `Convert the user text into a code-friendly English name. Output format: ${translationFormat.label}. ${translationFormat.instruction}`;
-    const contextInstruction = input.contextInstruction?.trim();
-    const prompt = contextInstruction ? `${systemPrompt}\n${contextInstruction}` : systemPrompt;
     const response = await input.fetcher(`${input.provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${input.provider.apiKey}`
       },
-      body: JSON.stringify({
-        model: input.provider.model,
-        messages: [
-          {
-            role: 'system',
-            content: prompt
-          },
-          { role: 'user', content: input.sourceText }
-        ],
-        temperature: 0.1
-      }),
+      body: JSON.stringify(createOpenAICompatibleRequestBody(input)),
       signal: controller.signal
     });
 
@@ -210,6 +280,166 @@ async function requestOpenAICompatibleTranslation(input: {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function requestOpenAICompatibleTranslationStream(input: {
+  sourceText: string;
+  targetLanguage: string;
+  translationFormat?: TranslationFormat;
+  contextInstruction?: string;
+  provider: OpenAICompatibleProvider;
+  fetcher: typeof fetch;
+  timeoutMs?: number;
+  onEvent: (event: TranslateTextStreamEvent) => void;
+}): Promise<string> {
+  const controller = new AbortController();
+  const timeoutMs = normalizePositiveInteger(input.timeoutMs, defaultTimeoutMs);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await input.fetcher(`${input.provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${input.provider.apiKey}`
+      },
+      body: JSON.stringify({
+        ...createOpenAICompatibleRequestBody(input),
+        stream: true
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw await createHttpError(response);
+    }
+
+    return await parseOpenAICompatibleStream(response, input.onEvent);
+  } catch (error) {
+    throw normalizeTranslationError(error);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function createOpenAICompatibleRequestBody(input: {
+  sourceText: string;
+  targetLanguage: string;
+  translationFormat?: TranslationFormat;
+  contextInstruction?: string;
+  provider: OpenAICompatibleProvider;
+}) {
+  const targetLanguageName = getLanguageLabel(input.targetLanguage);
+  const translationFormat = getTranslationFormatOption(
+    normalizeTranslationFormat(input.translationFormat)
+  ) ?? getTranslationFormatOption(defaultTranslationFormat)!;
+  const systemPrompt =
+    translationFormat.value === 'plain'
+      ? `Translate the user text into ${targetLanguageName} (${input.targetLanguage}). ${translationFormat.instruction}`
+      : `Convert the user text into a code-friendly English name. Output format: ${translationFormat.label}. ${translationFormat.instruction}`;
+  const contextInstruction = input.contextInstruction?.trim();
+  const prompt = contextInstruction ? `${systemPrompt}\n${contextInstruction}` : systemPrompt;
+
+  return {
+    model: input.provider.model,
+    messages: [
+      {
+        role: 'system',
+        content: prompt
+      },
+      { role: 'user', content: input.sourceText }
+    ],
+    temperature: 0.1
+  };
+}
+
+async function parseOpenAICompatibleStream(
+  response: Response,
+  onEvent: (event: TranslateTextStreamEvent) => void
+): Promise<string> {
+  if (!response.body) {
+    throw new Error('当前环境不支持流式翻译');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let translatedText = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const records = buffer.split(/\n\n/);
+      buffer = records.pop() || '';
+      for (const record of records) {
+        const done = parseOpenAICompatibleStreamRecord(record, (delta) => {
+          translatedText += delta;
+          onEvent({ type: 'delta', text: delta, translatedText });
+        });
+        if (done) {
+          return requireNonEmptyStreamTranslation(translatedText);
+        }
+      }
+    }
+
+    buffer += decoder.decode();
+    const done = parseOpenAICompatibleStreamRecord(buffer, (delta) => {
+      translatedText += delta;
+      onEvent({ type: 'delta', text: delta, translatedText });
+    });
+    if (done) {
+      return requireNonEmptyStreamTranslation(translatedText);
+    }
+
+    return requireNonEmptyStreamTranslation(translatedText);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseOpenAICompatibleStreamRecord(record: string, onDelta: (delta: string) => void): boolean {
+  const dataLines = record
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('data:'));
+
+  for (const line of dataLines) {
+    const rawData = line.slice('data:'.length).trim();
+    if (!rawData) {
+      continue;
+    }
+    if (rawData === '[DONE]') {
+      return true;
+    }
+
+    let payload: OpenAICompatibleStreamResponse;
+    try {
+      payload = JSON.parse(rawData) as OpenAICompatibleStreamResponse;
+    } catch {
+      throw new Error('翻译接口流式返回内容无法解析，请稍后重试');
+    }
+
+    const delta = payload.choices?.[0]?.delta?.content;
+    if (typeof delta === 'string' && delta) {
+      onDelta(delta);
+    }
+  }
+
+  return false;
+}
+
+function requireNonEmptyStreamTranslation(translatedText: string): string {
+  const normalizedText = translatedText.trim();
+  if (!normalizedText) {
+    throw new Error('翻译接口返回了空结果');
+  }
+
+  return normalizedText;
 }
 
 function formatMockTranslation(sourceText: string, translationFormat: string): string | undefined {

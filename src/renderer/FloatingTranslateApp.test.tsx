@@ -60,6 +60,64 @@ describe('FloatingTranslateApp', () => {
     expect(await screen.findByText('Hello')).toBeInTheDocument();
   });
 
+  it('renders streaming delta text before the final floating translation resolves', async () => {
+    let capturedCallback: ((payload: { text: string; targetLanguage?: string; translationFormat?: 'plain' }) => void) | undefined;
+    let resolveTranslation: ((value: {
+      provider: 'openai-compatible';
+      sourceText: string;
+      translatedText: string;
+      targetLanguage: string;
+    }) => void) | undefined;
+    window.quickTranslate = {
+      captureSelectedText: vi.fn(),
+      copyText: vi.fn(),
+      getDesktopSettings: vi.fn().mockResolvedValue({
+        mouseButton4Enabled: true,
+        launchAtLogin: false,
+        hideToTrayOnClose: true,
+        defaultTargetLanguage: 'zh-CN',
+        defaultTranslationFormat: 'plain'
+      }),
+      onFloatingSourceCaptured: vi.fn((callback) => {
+        capturedCallback = callback as (payload: { text: string; targetLanguage?: string; translationFormat?: 'plain' }) => void;
+        return vi.fn();
+      }),
+      onSelectionCaptured: vi.fn(),
+      translateTextStream: vi.fn((_input, onEvent) => {
+        onEvent({ type: 'delta', chunkIndex: 1, chunkCount: 1, text: '你', translatedText: '你' });
+        onEvent({ type: 'delta', chunkIndex: 1, chunkCount: 1, text: '好', translatedText: '你好' });
+        return new Promise((resolve) => {
+          resolveTranslation = resolve as typeof resolveTranslation;
+        });
+      }),
+      translateText: vi.fn(),
+      windowControl: vi.fn().mockResolvedValue(false)
+    } as any;
+
+    render(<FloatingTranslateApp />);
+
+    act(() => {
+      capturedCallback?.({ text: 'hello', targetLanguage: 'zh-CN' });
+    });
+
+    expect(await screen.findByText('你好')).toBeInTheDocument();
+    expect(screen.getByText('正在输出译文...')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveTranslation?.({
+        provider: 'openai-compatible',
+        sourceText: 'hello',
+        translatedText: '你好',
+        targetLanguage: 'zh-CN'
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('翻译中...')).not.toBeInTheDocument();
+    });
+    expect(window.quickTranslate?.translateText).not.toHaveBeenCalled();
+  });
+
   it('lets the floating window choose target language without changing the default preference and toggle pin state', async () => {
     window.quickTranslate = {
       captureSelectedText: vi.fn(),

@@ -27,7 +27,7 @@ import {
   retryUpdateTransaction,
   startAutoUpdates
 } from './autoUpdate.js';
-import { resolveDesktopBackendBaseUrl, translateWithBackend } from './backendTranslationClient.js';
+import { resolveDesktopBackendBaseUrl, translateWithBackend, translateWithBackendStream, type BackendTranslationStreamEvent } from './backendTranslationClient.js';
 import { captureSelectedText, restoreClipboardIfNeeded, type ClipboardRecoveryStore } from './captureSelection.js';
 import {
   defaultDesktopSettings,
@@ -433,6 +433,15 @@ function saveDesktopSettings(settings: DesktopSettings) {
 
 async function translateUsingConfiguredChannel(request: { text: string; targetLanguage: string; translationFormat: TranslationFormat }) {
   return translateWithBackend(request, {
+    baseUrl: resolveDesktopBackendBaseUrl(process.env)
+  });
+}
+
+async function translateUsingConfiguredChannelStream(
+  request: { text: string; targetLanguage: string; translationFormat: TranslationFormat },
+  onEvent: (event: BackendTranslationStreamEvent) => void
+) {
+  return translateWithBackendStream(request, onEvent, {
     baseUrl: resolveDesktopBackendBaseUrl(process.env)
   });
 }
@@ -942,6 +951,14 @@ if (hasSingleInstanceLock) {
     ipcMain.handle('translate-text', (_event, input: unknown) => {
       const request = normalizeTranslationIpcInput(input);
       return translateUsingConfiguredChannel(request);
+    });
+    ipcMain.handle('translate-text-stream', (event, payload: unknown) => {
+      const record = payload && typeof payload === 'object' ? payload as { streamId?: unknown; input?: unknown } : {};
+      const streamId = typeof record.streamId === 'string' && record.streamId ? record.streamId : `${Date.now()}`;
+      const request = normalizeTranslationIpcInput(record.input);
+      return translateUsingConfiguredChannelStream(request, (streamEvent) => {
+        event.sender.send('translate-text-stream-event', { streamId, event: streamEvent });
+      });
     });
     await createWindow();
     await markLatestInstallerStartedTransactionDone({

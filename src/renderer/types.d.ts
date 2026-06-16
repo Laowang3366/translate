@@ -23,6 +23,29 @@ type DesktopUpdateProgress = {
   message?: string;
 };
 
+type QuickTranslateStreamEvent =
+  | {
+      type: 'start';
+      totalChunks: number;
+      sourceLength: number;
+      mode: string;
+    }
+  | {
+      type: 'delta';
+      chunkIndex?: number;
+      chunkCount?: number;
+      text: string;
+      translatedText: string;
+    }
+  | {
+      type: 'chunk';
+      chunkIndex: number;
+      chunkCount: number;
+      progress: number;
+      translatedText: string;
+      fromCache: boolean;
+    };
+
 declare global {
   interface Window {
     __quickTranslateStartupCacheReset?: Promise<void>;
@@ -57,6 +80,10 @@ declare global {
       retryUpdateTransaction?(input?: { transactionId?: string }): Promise<boolean>;
       saveFloatingWindowPosition?(): Promise<DesktopSettings | null>;
       translateText?(input: { text: string; targetLanguage: string; translationFormat?: TranslationFormat }): Promise<TranslateTextResult>;
+      translateTextStream?(
+        input: { text: string; targetLanguage: string; translationFormat?: TranslationFormat },
+        callback: (event: QuickTranslateStreamEvent) => void
+      ): Promise<TranslateTextResult>;
       windowControl?(
         command:
           | 'minimize'

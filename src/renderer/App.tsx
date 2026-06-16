@@ -879,7 +879,7 @@ export function App() {
 
     try {
       const streamedChunks = new Map<number, string>();
-      const handleStreamEvent = (event: TranslationStreamEvent) => {
+      const handleStreamEvent = (event: TranslationStreamEvent | { type: 'delta'; chunkIndex?: number; chunkCount?: number; text: string; translatedText: string }) => {
         if (requestId !== translationRequestId.current) {
           return;
         }
@@ -904,10 +904,31 @@ export function App() {
             `已完成 ${streamedChunks.size}/${event.chunkCount} 段${event.fromCache ? ' · 命中缓存' : ''}`
           );
         }
+
+        if (event.type === 'delta') {
+          const chunkIndex = event.chunkIndex ?? 1;
+          const chunkCount = event.chunkCount ?? 1;
+          streamedChunks.set(chunkIndex, event.translatedText);
+          const partialText = Array.from({ length: chunkCount }, (_item, index) => streamedChunks.get(index + 1) || '')
+            .filter(Boolean)
+            .join('\n\n');
+          setResult({
+            provider: 'openai-compatible',
+            sourceText: normalizedText,
+            translatedText: partialText,
+            targetLanguage: language
+          });
+          setTranslationProgress(chunkCount > 1 ? `正在输出第 ${chunkIndex}/${chunkCount} 段` : '正在输出译文');
+        }
       };
-      const translation = window.quickTranslate?.translateText
-        ? await window.quickTranslate.translateText({ text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat })
-        : await translateWithCloudFallback(normalizedText, language, effectiveFormat, handleStreamEvent);
+      const translation = window.quickTranslate?.translateTextStream
+        ? await window.quickTranslate.translateTextStream(
+            { text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat },
+            handleStreamEvent
+          )
+        : window.quickTranslate?.translateText
+          ? await window.quickTranslate.translateText({ text: normalizedText, targetLanguage: language, translationFormat: effectiveFormat })
+          : await translateWithCloudFallback(normalizedText, language, effectiveFormat, handleStreamEvent);
 
       if (requestId !== translationRequestId.current) {
         return;

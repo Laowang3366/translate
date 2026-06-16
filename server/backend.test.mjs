@@ -915,6 +915,67 @@ describe('backend app', () => {
     }
   });
 
+  it('streams model token deltas before the chunk is finalized', async () => {
+    const streamDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-token-stream-'));
+    const streamApp = createBackendApp({
+      dataDir: streamDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'sk-stream-token',
+        model: 'gpt-stream-token'
+      },
+      translateText: async ({ text, targetLanguage, provider, onToken }) => {
+        onToken?.('你');
+        onToken?.('好');
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: '你好',
+          provider: provider.providerType
+        };
+      }
+    });
+
+    try {
+      const streamResult = await streamApp.prepareTranslationStream({
+        method: 'POST',
+        url: '/api/translate/stream',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'hello',
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+      const events = await collectTranslationStream(streamResult);
+
+      expect(events.map((event) => event.type)).toEqual(['start', 'delta', 'delta', 'chunk', 'done']);
+      expect(events[1]).toMatchObject({
+        type: 'delta',
+        chunkIndex: 1,
+        chunkCount: 1,
+        text: '你',
+        translatedText: '你'
+      });
+      expect(events[2]).toMatchObject({
+        type: 'delta',
+        text: '好',
+        translatedText: '你好'
+      });
+      expect(events.at(-1)).toMatchObject({
+        type: 'done',
+        result: expect.objectContaining({ translatedText: '你好' })
+      });
+    } finally {
+      await streamApp.store.waitForMetrics();
+      await rm(streamDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects source text over 30000 characters before calling the translation provider', async () => {
     const translateSpy = vi.fn();
     const limitDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-limit-'));

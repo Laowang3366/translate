@@ -47,5 +47,23 @@ contextBridge.exposeInMainWorld('quickTranslate', {
   retryUpdateTransaction: (input?: unknown) => ipcRenderer.invoke('retry-update-transaction', input),
   saveFloatingWindowPosition: () => ipcRenderer.invoke('save-floating-window-position'),
   translateText: (input: unknown) => ipcRenderer.invoke('translate-text', input),
+  translateTextStream: (input: unknown, callback: (event: unknown) => void) => {
+    const streamId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      if (!payload || typeof payload !== 'object') {
+        return;
+      }
+
+      const record = payload as { streamId?: string; event?: unknown };
+      if (record.streamId === streamId) {
+        callback(record.event);
+      }
+    };
+    ipcRenderer.on('translate-text-stream-event', listener);
+
+    return ipcRenderer.invoke('translate-text-stream', { streamId, input }).finally(() => {
+      ipcRenderer.removeListener('translate-text-stream-event', listener);
+    });
+  },
   windowControl: (command: unknown) => ipcRenderer.invoke('window-control', command)
 });
