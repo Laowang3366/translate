@@ -33,6 +33,8 @@ const maxTranslationSourceChars = 30_000;
 const longTranslationChunkChars = 6_000;
 const maxTranslationQualityAttempts = 2;
 const longTranslationChunkConcurrency = 2;
+const maxSingleTranslationProviderTimeoutMs = 90_000;
+const maxChunkTranslationProviderTimeoutMs = 30_000;
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -859,7 +861,8 @@ async function translateChunkWithQualityRetry(input) {
       translationFormat: input.translationFormat,
       contextInstruction: input.contextInstruction,
       provider: input.provider,
-      timeoutMs: input.timeoutMs
+      timeoutMs: effectiveTranslationTimeoutMs(input.timeoutMs, input.chunkCount),
+      maxRetries: 0
     });
     lastResult = result;
     const qualityIssue = translationQualityIssue({
@@ -1014,13 +1017,19 @@ function hardSplitUnit(text, maxChars) {
 function inferTranslationErrorStatus(error) {
   const status = errorStatus(error);
   if (isAbortError(error) || safeTranslationErrorMessage(error).includes('超时')) {
-    return 504;
+    return 408;
   }
   if (typeof status === 'number' && status >= 400) {
     return 502;
   }
 
   return 502;
+}
+
+function effectiveTranslationTimeoutMs(timeoutMs, chunkCount) {
+  const configuredTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : maxSingleTranslationProviderTimeoutMs;
+  const cap = chunkCount > 1 ? maxChunkTranslationProviderTimeoutMs : maxSingleTranslationProviderTimeoutMs;
+  return Math.min(configuredTimeoutMs, cap);
 }
 
 function logTranslationError(logger, input) {

@@ -307,7 +307,7 @@ describe('backend app', () => {
     }
   });
 
-  it('passes provider timeout minutes to the translation request as milliseconds', async () => {
+  it('caps provider timeout minutes before calling the public translation request', async () => {
     let capturedTimeoutMs = 0;
     const timeoutDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-provider-timeout-'));
     const timeoutApp = createBackendApp({
@@ -342,7 +342,7 @@ describe('backend app', () => {
       });
 
       expect(translateResponse.status).toBe(200);
-      expect(capturedTimeoutMs).toBe(180_000);
+      expect(capturedTimeoutMs).toBe(90_000);
     } finally {
       await timeoutApp.store.waitForMetrics();
       await rm(timeoutDir, { recursive: true, force: true });
@@ -861,6 +861,8 @@ describe('backend app', () => {
       expect(response.status).toBe(200);
       expect(calls.length).toBeGreaterThan(1);
       expect(calls.every((call) => call.text.length <= 6000)).toBe(true);
+      expect(calls.every((call) => call.timeoutMs === 30_000)).toBe(true);
+      expect(calls.every((call) => call.maxRetries === 0)).toBe(true);
       expect(calls[0].contextInstruction).toContain(`第 1 段，共 ${calls.length} 段`);
       expect(calls[0].contextInstruction).toContain('逐句逐段完整翻译');
       expect(response.body.translatedText).toBe(calls.map((_call, index) => `分段译文${index + 1}`.repeat(120)).join('\n\n'));
@@ -1074,7 +1076,7 @@ describe('backend app', () => {
         })
       });
 
-      expect(response.status).toBe(504);
+      expect(response.status).toBe(408);
       expect(response.body.error).toBe('翻译接口请求超时，请稍后重试');
       expect(logger.error).toHaveBeenCalledWith(
         '[translate:error]',
