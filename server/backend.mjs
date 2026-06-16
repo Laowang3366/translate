@@ -27,7 +27,7 @@ const defaultNotifications = [];
 const defaultUpdateFailureReports = [];
 const defaultUpdateReportToken = 'quick-translate-update-report-v1';
 const beijingOffsetMs = 8 * 60 * 60 * 1000;
-const defaultProviderRequestTimeoutMinutes = 1;
+const defaultProviderRequestTimeoutMinutes = 5;
 const maxProviderRequestTimeoutMinutes = 30;
 const defaultMetrics = {
   apiCalls: {

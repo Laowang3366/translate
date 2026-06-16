@@ -1368,7 +1368,7 @@
               </label>
               <label class="form-row">
                 <span>请求超时（分钟）</span>
-                <input id="request-timeout-minutes" type="number" min="1" max="30" step="1" value="1" />
+                <input id="request-timeout-minutes" type="number" min="1" max="30" step="1" value="5" />
                 <small class="field-hint">长文本翻译建议设置为 2-5 分钟，最大 30 分钟。</small>
               </label>
               <div class="form-actions">
@@ -1781,7 +1781,7 @@
         document.querySelector('#provider-type').value = provider.providerType || 'openai-compatible';
         document.querySelector('#base-url').value = provider.baseUrl || '';
         renderModelOptions(provider.model ? [provider.model] : [], provider.model || '');
-        document.querySelector('#request-timeout-minutes').value = String(provider.requestTimeoutMinutes || 1);
+        document.querySelector('#request-timeout-minutes').value = String(provider.requestTimeoutMinutes || 5);
         const apiKeyInput = document.querySelector('#api-key');
         apiKeyInput.value = '';
         apiKeyInput.disabled = true;
@@ -1802,7 +1802,7 @@
         document.querySelector('#provider-type').value = 'openai-compatible';
         document.querySelector('#base-url').value = '';
         renderModelOptions([], '');
-        document.querySelector('#request-timeout-minutes').value = '1';
+        document.querySelector('#request-timeout-minutes').value = '5';
         const apiKeyInput = document.querySelector('#api-key');
         apiKeyInput.value = '';
         apiKeyInput.disabled = false;
@@ -1861,7 +1861,7 @@
               <div class="provider-meta"><span>接口地址</span><strong>${escapeHtml(provider.baseUrl || '--')}</strong></div>
               <div class="provider-meta"><span>模型</span><strong>${escapeHtml(provider.model || '--')}</strong></div>
               <div class="provider-meta"><span>引擎类型</span><strong>${escapeHtml(provider.providerType || '--')}</strong></div>
-              <div class="provider-meta"><span>请求超时</span><strong>${escapeHtml(provider.requestTimeoutMinutes || 1)} 分钟</strong></div>
+              <div class="provider-meta"><span>请求超时</span><strong>${escapeHtml(provider.requestTimeoutMinutes || 5)} 分钟</strong></div>
               <div class="provider-meta"><span>密钥</span><strong>${escapeHtml(keyDisplay)}</strong></div>
             </div>
             <div class="provider-actions">

@@ -345,6 +345,12 @@ describe('backend app', () => {
     }
   });
 
+  it('defaults provider request timeout to five minutes when no timeout is configured', async () => {
+    const providerState = await app.store.getProviderState();
+
+    expect(providerState.providers[0].requestTimeoutMinutes).toBe(5);
+  });
+
   it('lets an authenticated admin reveal a provider API key on demand', async () => {
     const loginResponse = await request('POST', '/api/admin/login', {
       username: 'admin',
