@@ -862,6 +862,7 @@ describe('backend app', () => {
       expect(calls.length).toBeGreaterThan(1);
       expect(calls.every((call) => call.text.length <= 6000)).toBe(true);
       expect(calls[0].contextInstruction).toContain(`第 1 段，共 ${calls.length} 段`);
+      expect(calls[0].contextInstruction).toContain('逐句逐段完整翻译');
       expect(response.body.translatedText).toBe(calls.map((_call, index) => `分段译文${index + 1}`.repeat(120)).join('\n\n'));
     } finally {
       await chunkApp.store.waitForMetrics();
@@ -1025,7 +1026,7 @@ describe('backend app', () => {
         })
       });
 
-      expect(response.status).toBe(502);
+      expect(response.status).toBe(422);
       expect(response.body.error).toBe('翻译结果异常，请稍后重试或缩短文本');
       expect(attempts).toBe(2);
       const loggedPayload = JSON.stringify([...logger.warn.mock.calls, ...logger.error.mock.calls]);

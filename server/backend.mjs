@@ -884,7 +884,7 @@ async function translateChunkWithQualityRetry(input) {
     });
   }
 
-  throw new HttpError(502, '翻译结果异常，请稍后重试或缩短文本');
+  throw new HttpError(422, '翻译结果异常，请稍后重试或缩短文本');
 }
 
 function shouldChunkTranslation(text, translationFormat) {
@@ -892,7 +892,7 @@ function shouldChunkTranslation(text, translationFormat) {
 }
 
 function buildChunkContextInstruction(chunkIndex, chunkCount) {
-  return `长文本分段翻译：这是第 ${chunkIndex} 段，共 ${chunkCount} 段。保持术语、人名、上下文、语气、编号和格式一致；只输出当前段译文，不要总结，不要省略，不要解释。`;
+  return `长文本分段翻译：这是第 ${chunkIndex} 段，共 ${chunkCount} 段。保持术语、人名、上下文、语气、编号和格式一致；只输出当前段译文，不要总结，不要省略，不要解释。即使内容重复，也必须逐句逐段完整翻译，不要使用“同上”“重复内容”“省略”等概括表达。`;
 }
 
 function translationQualityIssue(input) {
