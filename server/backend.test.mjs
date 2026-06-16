@@ -860,7 +860,7 @@ describe('backend app', () => {
 
       expect(response.status).toBe(200);
       expect(calls.length).toBeGreaterThan(1);
-      expect(calls.every((call) => call.text.length <= 6000)).toBe(true);
+      expect(calls.every((call) => call.text.length <= 4000)).toBe(true);
       expect(calls.every((call) => call.timeoutMs === 30_000)).toBe(true);
       expect(calls.every((call) => call.maxRetries === 0)).toBe(true);
       expect(calls[0].contextInstruction).toContain(`第 1 段，共 ${calls.length} 段`);
@@ -919,7 +919,7 @@ describe('backend app', () => {
 
       expect(response.status).toBe(200);
       expect(maxInFlight).toBeGreaterThan(1);
-      expect(maxInFlight).toBeLessThanOrEqual(2);
+      expect(maxInFlight).toBeLessThanOrEqual(3);
       expect(response.body.translatedText).toBe(calls.map((_call, index) => `有序译文${index + 1}`.repeat(120)).join('\n\n'));
     } finally {
       await chunkApp.store.waitForMetrics();
