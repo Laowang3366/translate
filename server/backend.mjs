@@ -45,6 +45,7 @@ const maxPublicTranslationResponseMs = 95_000;
 const maxSingleTranslationProviderTimeoutMs = 90_000;
 const maxChunkTranslationProviderTimeoutMs = 45_000;
 const maxTranslationCacheEntries = 1_000;
+const maxTranslationMemoryEntries = 5_000;
 const translationMetaSymbol = Symbol('quickTranslateTranslationMeta');
 const chunkMetaSymbol = Symbol('quickTranslateChunkMeta');
 const defaultMetrics = {
@@ -84,6 +85,9 @@ const defaultMetrics = {
   }
 };
 const defaultTranslationCache = {
+  entries: {}
+};
+const defaultTranslationMemory = {
   entries: {}
 };
 const providerModelListTimeoutMs = 15_000;
@@ -463,6 +467,7 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     downloads: path.join(dataDir, 'downloads.json'),
     metrics: path.join(dataDir, 'metrics.json'),
     translationCache: path.join(dataDir, 'translation-cache.json'),
+    translationMemory: path.join(dataDir, 'translation-memory.json'),
     notifications: path.join(dataDir, 'notifications.json'),
     updateFailureReports: path.join(dataDir, 'update-failure-reports.json'),
     updateFailureReportLog: path.join(dataDir, 'update-failure-reports.log')
@@ -476,6 +481,7 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     downloads: createJsonFile(paths.downloads, defaultDownloadManifest),
     metrics: createJsonFile(paths.metrics, defaultMetrics),
     translationCache: createJsonFile(paths.translationCache, defaultTranslationCache),
+    translationMemory: createJsonFile(paths.translationMemory, defaultTranslationMemory),
     notifications: createJsonFile(paths.notifications, defaultNotifications),
     updateFailureReports: createJsonFile(paths.updateFailureReports, defaultUpdateFailureReports)
   };
@@ -756,6 +762,43 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
         };
         cache.entries[normalizedKey] = touchedEntry;
         return cache;
+      });
+      return touchedEntry ? cloneJson(touchedEntry) : null;
+    },
+    async getTranslationMemoryEntry(key) {
+      const memory = normalizeTranslationMemory(await files.translationMemory.read());
+      const entry = memory.entries[stringOrEmpty(key)];
+      return entry ? cloneJson(entry) : null;
+    },
+    async saveTranslationMemoryEntry(entry) {
+      await files.translationMemory.update((value) => {
+        const memory = normalizeTranslationMemory(value);
+        const normalizedEntry = normalizeTranslationMemoryEntry(entry);
+        if (!normalizedEntry.key) {
+          return memory;
+        }
+
+        memory.entries[normalizedEntry.key] = normalizedEntry;
+        return trimTranslationMemory(memory);
+      });
+    },
+    async touchTranslationMemoryEntry(key) {
+      let touchedEntry = null;
+      await files.translationMemory.update((value) => {
+        const memory = normalizeTranslationMemory(value);
+        const normalizedKey = stringOrEmpty(key);
+        const entry = memory.entries[normalizedKey];
+        if (!entry) {
+          return memory;
+        }
+
+        touchedEntry = {
+          ...entry,
+          hitCount: nonNegativeNumber(entry.hitCount) + 1,
+          lastUsedAt: new Date().toISOString()
+        };
+        memory.entries[normalizedKey] = touchedEntry;
+        return memory;
       });
       return touchedEntry ? cloneJson(touchedEntry) : null;
     },
@@ -1083,10 +1126,26 @@ async function translateRepeatedSemanticUnits(input) {
 
 async function translateChunkWithQualityRetry(input) {
   const cacheKey = createTranslationCacheKey(input);
-  if (input.store && cacheKey) {
-    const cachedEntry = await input.store.getTranslationCacheEntry(cacheKey);
+  const memoryKey = createTranslationMemoryKey(input);
+  if (input.store) {
+    const cachedEntry = cacheKey ? await input.store.getTranslationCacheEntry(cacheKey) : null;
     if (cachedEntry?.translatedText) {
       await input.store.touchTranslationCacheEntry(cacheKey);
+      if (memoryKey) {
+        await input.store.saveTranslationMemoryEntry({
+          key: memoryKey,
+          sourceHash: hashString(normalizeTranslationMemorySource(input.text)),
+          sourceText: normalizeTranslationMemorySource(input.text),
+          provider: cachedEntry.provider || 'openai-compatible',
+          targetLanguage: input.targetLanguage,
+          translationFormat: stringOrEmpty(input.translationFormat) || 'plain',
+          translatedText: cachedEntry.translatedText,
+          createdAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString(),
+          hitCount: 0,
+          durationMs: nonNegativeNumber(cachedEntry.durationMs)
+        });
+      }
       input.stats.cacheHits += 1;
       input.stats.cachedChunks += 1;
       const result = {
@@ -1098,7 +1157,25 @@ async function translateChunkWithQualityRetry(input) {
       result[chunkMetaSymbol] = { fromCache: true };
       return result;
     }
-    input.stats.cacheMisses += 1;
+
+    const memoryEntry = memoryKey ? await input.store.getTranslationMemoryEntry(memoryKey) : null;
+    if (memoryEntry?.translatedText) {
+      await input.store.touchTranslationMemoryEntry(memoryKey);
+      input.stats.cacheHits += 1;
+      input.stats.cachedChunks += 1;
+      const result = {
+        provider: memoryEntry.provider || 'openai-compatible',
+        sourceText: input.text,
+        translatedText: memoryEntry.translatedText,
+        targetLanguage: input.targetLanguage
+      };
+      result[chunkMetaSymbol] = { fromCache: true };
+      return result;
+    }
+
+    if (cacheKey || memoryKey) {
+      input.stats.cacheMisses += 1;
+    }
   }
 
   let lastResult = null;
@@ -1149,6 +1226,21 @@ async function translateChunkWithQualityRetry(input) {
           key: cacheKey,
           sourceHash: hashString(input.text),
           providerHash: hashString(providerCacheIdentity(input.provider)),
+          provider: result.provider,
+          targetLanguage: input.targetLanguage,
+          translationFormat: stringOrEmpty(input.translationFormat) || 'plain',
+          translatedText: result.translatedText,
+          createdAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString(),
+          hitCount: 0,
+          durationMs: Date.now() - startedAt
+        });
+      }
+      if (input.store && memoryKey) {
+        await input.store.saveTranslationMemoryEntry({
+          key: memoryKey,
+          sourceHash: hashString(normalizeTranslationMemorySource(input.text)),
+          sourceText: normalizeTranslationMemorySource(input.text),
           provider: result.provider,
           targetLanguage: input.targetLanguage,
           translationFormat: stringOrEmpty(input.translationFormat) || 'plain',
@@ -1284,6 +1376,29 @@ function createTranslationCacheKey(input) {
       provider: providerCacheIdentity(input.provider)
     })
   );
+}
+
+function createTranslationMemoryKey(input) {
+  if (!input.store) {
+    return '';
+  }
+
+  const normalizedSource = normalizeTranslationMemorySource(input.text);
+  if (!normalizedSource) {
+    return '';
+  }
+
+  return hashString(
+    JSON.stringify({
+      text: normalizedSource,
+      targetLanguage: input.targetLanguage,
+      translationFormat: stringOrEmpty(input.translationFormat) || 'plain'
+    })
+  );
+}
+
+function normalizeTranslationMemorySource(text) {
+  return stringOrEmpty(text).trim().replace(/\s+/g, ' ');
 }
 
 function providerCacheIdentity(provider) {
@@ -1947,6 +2062,44 @@ function trimTranslationCache(cache) {
   const entries = Object.entries(normalizeTranslationCache(cache).entries)
     .sort((left, right) => stringOrEmpty(right[1].lastUsedAt).localeCompare(stringOrEmpty(left[1].lastUsedAt)))
     .slice(0, maxTranslationCacheEntries);
+  return { entries: Object.fromEntries(entries) };
+}
+
+function normalizeTranslationMemory(value) {
+  const record = isRecord(value) ? value : {};
+  const rawEntries = isRecord(record.entries) ? record.entries : {};
+  const entries = {};
+  Object.entries(rawEntries).forEach(([key, entry]) => {
+    const normalizedEntry = normalizeTranslationMemoryEntry({ ...(isRecord(entry) ? entry : {}), key });
+    if (normalizedEntry.key && normalizedEntry.translatedText) {
+      entries[normalizedEntry.key] = normalizedEntry;
+    }
+  });
+
+  return { entries };
+}
+
+function normalizeTranslationMemoryEntry(value) {
+  const record = isRecord(value) ? value : {};
+  return {
+    key: stringOrEmpty(record.key),
+    sourceHash: stringOrEmpty(record.sourceHash),
+    sourceText: normalizeTranslationMemorySource(record.sourceText),
+    provider: stringOrEmpty(record.provider) || 'openai-compatible',
+    targetLanguage: stringOrEmpty(record.targetLanguage),
+    translationFormat: stringOrEmpty(record.translationFormat) || 'plain',
+    translatedText: stringOrEmpty(record.translatedText),
+    createdAt: stringOrEmpty(record.createdAt) || new Date().toISOString(),
+    lastUsedAt: stringOrEmpty(record.lastUsedAt) || stringOrEmpty(record.createdAt) || new Date().toISOString(),
+    hitCount: nonNegativeNumber(record.hitCount),
+    durationMs: nonNegativeNumber(record.durationMs)
+  };
+}
+
+function trimTranslationMemory(memory) {
+  const entries = Object.entries(normalizeTranslationMemory(memory).entries)
+    .sort((left, right) => stringOrEmpty(right[1].lastUsedAt).localeCompare(stringOrEmpty(left[1].lastUsedAt)))
+    .slice(0, maxTranslationMemoryEntries);
   return { entries: Object.fromEntries(entries) };
 }
 

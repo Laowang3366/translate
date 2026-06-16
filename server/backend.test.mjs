@@ -860,6 +860,72 @@ describe('backend app', () => {
     }
   });
 
+  it('uses translation memory across provider changes to avoid model calls', async () => {
+    let providerCalls = 0;
+    const memoryDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-memory-'));
+    const memoryApp = createBackendApp({
+      dataDir: memoryDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://primary.example.test/v1',
+        apiKey: 'sk-memory-primary',
+        model: 'gpt-memory-primary'
+      },
+      translateText: async ({ text, targetLanguage, provider }) => {
+        providerCalls += 1;
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: `memory:${text}`,
+          provider: provider.providerType
+        };
+      }
+    });
+
+    try {
+      const input = {
+        text: 'Remember this product phrase.',
+        targetLanguage: 'zh-CN',
+        translationFormat: 'plain'
+      };
+      const firstResponse = await memoryApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      await memoryApp.store.saveProvider({
+        providerType: 'openai-compatible',
+        baseUrl: 'https://backup.example.test/v1',
+        apiKey: 'sk-memory-backup',
+        model: 'gpt-memory-backup'
+      });
+      const secondResponse = await memoryApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      await memoryApp.store.waitForMetrics();
+      const metrics = await memoryApp.store.getMetrics();
+
+      expect(firstResponse.status).toBe(200);
+      expect(secondResponse.status).toBe(200);
+      expect(secondResponse.body.translatedText).toBe(firstResponse.body.translatedText);
+      expect(providerCalls).toBe(1);
+      expect(metrics.translations.total).toBe(2);
+      expect(metrics.translations.providerRequests).toBe(1);
+      expect(metrics.translations.cacheHits).toBe(1);
+      expect(metrics.translations.savedProviderRequests).toBe(1);
+    } finally {
+      await memoryApp.store.waitForMetrics();
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  });
+
   it('streams chunk progress events and stores streaming translation metrics', async () => {
     const streamDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-stream-'));
     const streamApp = createBackendApp({
@@ -910,6 +976,76 @@ describe('backend app', () => {
       expect(metrics.translations.totalChunks).toBeGreaterThan(1);
       expect(metrics.translations.averageFirstChunkMs).toBeGreaterThanOrEqual(0);
       expect(metrics.translations.averageDurationMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      await streamApp.store.waitForMetrics();
+      await rm(streamDir, { recursive: true, force: true });
+    }
+  });
+
+  it('streams translation memory hits without calling the model again', async () => {
+    let providerCalls = 0;
+    const streamDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-memory-stream-'));
+    const streamApp = createBackendApp({
+      dataDir: streamDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://primary.example.test/v1',
+        apiKey: 'sk-memory-stream-primary',
+        model: 'gpt-memory-stream-primary'
+      },
+      translateText: async ({ text, targetLanguage, provider }) => {
+        providerCalls += 1;
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: `stream-memory:${text}`,
+          provider: provider.providerType
+        };
+      }
+    });
+
+    try {
+      const input = {
+        text: 'Stream this remembered phrase.',
+        targetLanguage: 'zh-CN',
+        translationFormat: 'plain'
+      };
+      const firstResponse = await streamApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      await streamApp.store.saveProvider({
+        providerType: 'openai-compatible',
+        baseUrl: 'https://backup.example.test/v1',
+        apiKey: 'sk-memory-stream-backup',
+        model: 'gpt-memory-stream-backup'
+      });
+      const streamResult = await streamApp.prepareTranslationStream({
+        method: 'POST',
+        url: '/api/translate/stream',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      const events = await collectTranslationStream(streamResult);
+      await streamApp.store.waitForMetrics();
+      const metrics = await streamApp.store.getMetrics();
+
+      expect(firstResponse.status).toBe(200);
+      expect(providerCalls).toBe(1);
+      expect(events.map((event) => event.type)).toEqual(['start', 'chunk', 'done']);
+      expect(events[1]).toMatchObject({
+        type: 'chunk',
+        fromCache: true,
+        translatedText: firstResponse.body.translatedText
+      });
+      expect(metrics.translations.total).toBe(2);
+      expect(metrics.translations.providerRequests).toBe(1);
+      expect(metrics.translations.cacheHits).toBe(1);
     } finally {
       await streamApp.store.waitForMetrics();
       await rm(streamDir, { recursive: true, force: true });
