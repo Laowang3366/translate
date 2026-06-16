@@ -44,4 +44,13 @@ describe('download page platform cards', () => {
     expect(html).toContain('void animateDemoResultText(event.result?.translatedText');
     expect(html).not.toContain("demoResult.textContent = '';");
   });
+
+  it('reports anonymous page visits to the backend analytics endpoint', async () => {
+    const html = await readFile(path.resolve('server/public/download.html'), 'utf8');
+
+    expect(html).toContain('quick-translate-visitor-id');
+    expect(html).toContain('function trackPageVisit(view)');
+    expect(html).toContain("/api/visits/track");
+    expect(html).toContain('trackPageVisit(normalizedView)');
+  });
 });

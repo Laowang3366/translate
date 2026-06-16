@@ -754,6 +754,7 @@
       const backendBase = resolveBackendBase();
       const assetBase = `${backendBase}/assets/`;
       const viewIds = ['home', 'download', 'interface'];
+      const visitorStorageKey = 'quick-translate-visitor-id';
       const languageLabels = {
         'zh-CN': '简体中文',
         'en-US': '英语',
@@ -781,6 +782,7 @@
           history.pushState({ view: normalizedView }, '', normalizedView === 'download' ? '/download' : '/');
         }
         setCarouselAutoplay(normalizedView === 'interface');
+        trackPageVisit(normalizedView);
         window.scrollTo({ top: 0, behavior: 'auto' });
       }
 
@@ -1293,6 +1295,48 @@
           body: payload,
           keepalive: true
         }).catch(() => undefined);
+      }
+
+      function trackPageVisit(view) {
+        const normalizedView = viewIds.includes(view) ? view : currentRouteView();
+        const page = normalizedView === 'download' ? '/download' : normalizedView === 'interface' ? '/interface' : '/';
+        const payload = JSON.stringify({
+          visitorId: getOrCreateVisitorId(),
+          page,
+          title: document.title,
+          referrer: document.referrer,
+          language: navigator.language || '',
+          userAgent: navigator.userAgent || ''
+        });
+        const endpoint = apiUrl('/api/visits/track');
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(endpoint, new Blob([payload], { type: 'application/json' }));
+          return;
+        }
+
+        fetch(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: payload,
+          keepalive: true
+        }).catch(() => undefined);
+      }
+
+      function getOrCreateVisitorId() {
+        try {
+          const existingId = localStorage.getItem(visitorStorageKey);
+          if (existingId) {
+            return existingId;
+          }
+          const visitorId =
+            typeof globalThis.crypto?.randomUUID === 'function'
+              ? globalThis.crypto.randomUUID()
+              : `visitor-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          localStorage.setItem(visitorStorageKey, visitorId);
+          return visitorId;
+        } catch {
+          return `visitor-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
       }
 
       function renderPlatformDownloads(releases) {

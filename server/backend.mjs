@@ -82,6 +82,20 @@ const defaultMetrics = {
     byVersion: {},
     byFileName: {},
     latestAt: ''
+  },
+  visitors: {
+    total: 0,
+    uniqueTotal: 0,
+    byDay: {},
+    uniqueByDay: {},
+    byPage: {},
+    byDevice: {},
+    byBrowser: {},
+    byOs: {},
+    byReferrer: {},
+    latestAt: '',
+    recent: [],
+    knownVisitorHashes: {}
   }
 };
 const defaultTranslationCache = {
@@ -301,6 +315,11 @@ export function createBackendApp(options = {}) {
       if (method === 'POST' && pathname === '/api/downloads/track') {
         const metrics = await store.recordDownloadEvent(await readJsonBody(request));
         return createJsonResponse(200, { metrics: metrics.downloads });
+      }
+
+      if (method === 'POST' && pathname === '/api/visits/track') {
+        const metrics = await store.recordVisitEvent(normalizeVisitEvent(await readJsonBody(request), request));
+        return createJsonResponse(200, { metrics: metrics.visitors });
       }
 
       if (method === 'POST' && pathname === '/api/update-failure-reports') {
@@ -804,6 +823,9 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     },
     async recordDownloadEvent(event) {
       return files.metrics.update((value) => incrementDownloadMetrics(value, event));
+    },
+    async recordVisitEvent(event) {
+      return files.metrics.update((value) => incrementVisitMetrics(value, event));
     },
     async recordUpdateFailureReport(input) {
       const report = normalizeUpdateFailureReport(input, {
@@ -2108,6 +2130,7 @@ function normalizeMetrics(value) {
   const apiCalls = isRecord(record.apiCalls) ? record.apiCalls : {};
   const translations = isRecord(record.translations) ? record.translations : {};
   const downloads = isRecord(record.downloads) ? record.downloads : {};
+  const visitors = isRecord(record.visitors) ? record.visitors : {};
 
   return {
     apiCalls: {
@@ -2143,6 +2166,20 @@ function normalizeMetrics(value) {
       byVersion: normalizeCounterRecord(downloads.byVersion),
       byFileName: normalizeCounterRecord(downloads.byFileName),
       latestAt: stringOrEmpty(downloads.latestAt)
+    },
+    visitors: {
+      total: nonNegativeNumber(visitors.total),
+      uniqueTotal: nonNegativeNumber(visitors.uniqueTotal),
+      byDay: normalizeCounterRecord(visitors.byDay),
+      uniqueByDay: normalizeCounterRecord(visitors.uniqueByDay),
+      byPage: normalizeCounterRecord(visitors.byPage),
+      byDevice: normalizeCounterRecord(visitors.byDevice),
+      byBrowser: normalizeCounterRecord(visitors.byBrowser),
+      byOs: normalizeCounterRecord(visitors.byOs),
+      byReferrer: normalizeCounterRecord(visitors.byReferrer),
+      latestAt: stringOrEmpty(visitors.latestAt),
+      recent: normalizeRecentVisits(visitors.recent),
+      knownVisitorHashes: normalizeStringRecord(visitors.knownVisitorHashes)
     }
   };
 }
@@ -2221,6 +2258,180 @@ function incrementDownloadMetrics(value, event) {
   incrementCounter(metrics.downloads.byFileName, fileName);
   metrics.downloads.latestAt = new Date().toISOString();
   return metrics;
+}
+
+function incrementVisitMetrics(value, event) {
+  const metrics = normalizeMetrics(value);
+  const record = normalizeVisitRecord(event);
+  const day = formatMetricDay(record.visitedAt);
+  const knownVisitors = metrics.visitors.knownVisitorHashes;
+  const isNewVisitor = record.visitorHash && !knownVisitors[record.visitorHash];
+
+  metrics.visitors.total += 1;
+  incrementCounter(metrics.visitors.byDay, day);
+  incrementCounter(metrics.visitors.byPage, record.page);
+  incrementCounter(metrics.visitors.byDevice, record.device);
+  incrementCounter(metrics.visitors.byBrowser, record.browser);
+  incrementCounter(metrics.visitors.byOs, record.os);
+  incrementCounter(metrics.visitors.byReferrer, record.referrer);
+  metrics.visitors.latestAt = record.visitedAt;
+
+  if (isNewVisitor) {
+    knownVisitors[record.visitorHash] = record.visitedAt;
+    metrics.visitors.uniqueTotal = Object.keys(knownVisitors).length;
+    incrementCounter(metrics.visitors.uniqueByDay, day);
+  } else {
+    metrics.visitors.uniqueTotal = Object.keys(knownVisitors).length;
+  }
+
+  metrics.visitors.recent = [record, ...metrics.visitors.recent].slice(0, 100);
+  return metrics;
+}
+
+function normalizeVisitEvent(body, request) {
+  const record = isRecord(body) ? body : {};
+  const userAgent = stringOrEmpty(record.userAgent) || requestHeader(request, 'user-agent');
+  const visitorSource = buildVisitorSource(record, request, userAgent);
+  const userAgentInfo = classifyUserAgent(userAgent);
+
+  return normalizeVisitRecord({
+    visitorHash: visitorSource ? hashString(visitorSource).slice(0, 24) : hashString(randomId()).slice(0, 24),
+    page: record.page || record.pathname,
+    title: record.title,
+    referrer: record.referrer || requestHeader(request, 'referer'),
+    language: record.language || requestHeader(request, 'accept-language'),
+    device: record.device || userAgentInfo.device,
+    browser: record.browser || userAgentInfo.browser,
+    os: record.os || userAgentInfo.os,
+    visitedAt: new Date().toISOString()
+  });
+}
+
+function normalizeVisitRecord(value) {
+  const record = isRecord(value) ? value : {};
+  const visitedAt = new Date(stringOrEmpty(record.visitedAt));
+  return {
+    visitorHash: stringOrEmpty(record.visitorHash).slice(0, 64),
+    page: normalizeVisitPage(record.page),
+    title: stringOrEmpty(record.title).trim().slice(0, 120),
+    referrer: normalizeVisitReferrer(record.referrer),
+    language: normalizeVisitLanguage(record.language),
+    device: normalizeVisitDimension(record.device, 'unknown'),
+    browser: normalizeVisitDimension(record.browser, 'Other'),
+    os: normalizeVisitDimension(record.os, 'Other'),
+    visitedAt: Number.isNaN(visitedAt.getTime()) ? new Date().toISOString() : visitedAt.toISOString()
+  };
+}
+
+function normalizeRecentVisits(value) {
+  return Array.isArray(value)
+    ? value
+        .filter(isRecord)
+        .map(normalizeVisitRecord)
+        .filter((visit) => visit.visitorHash)
+        .slice(0, 100)
+    : [];
+}
+
+function normalizeStringRecord(value) {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, entryValue]) => [stringOrEmpty(key), stringOrEmpty(entryValue)])
+      .filter(([key, entryValue]) => key && entryValue)
+  );
+}
+
+function buildVisitorSource(record, request, userAgent) {
+  const visitorId = stringOrEmpty(record.visitorId).trim();
+  if (visitorId) {
+    return `visitor:${visitorId.slice(0, 200)}`;
+  }
+
+  const clientIp = firstForwardedIp(requestHeader(request, 'x-forwarded-for')) || requestHeader(request, 'x-real-ip');
+  const language = requestHeader(request, 'accept-language');
+  const source = [clientIp, userAgent, language].filter(Boolean).join('|');
+  return source ? `request:${source}` : '';
+}
+
+function requestHeader(request, headerName) {
+  const headers = request?.headers || {};
+  if (typeof headers.get === 'function') {
+    return stringOrEmpty(headers.get(headerName));
+  }
+
+  const lowerName = headerName.toLowerCase();
+  const matchedKey = Object.keys(headers).find((key) => key.toLowerCase() === lowerName);
+  return matchedKey ? stringOrEmpty(headers[matchedKey]) : '';
+}
+
+function firstForwardedIp(value) {
+  return stringOrEmpty(value).split(',')[0]?.trim() || '';
+}
+
+function normalizeVisitPage(value) {
+  const normalized = stringOrEmpty(value).trim() || '/';
+  if (!normalized.startsWith('/')) {
+    return `/${normalized}`.slice(0, 120);
+  }
+  return normalized.slice(0, 120);
+}
+
+function normalizeVisitReferrer(value) {
+  const normalized = stringOrEmpty(value).trim();
+  if (!normalized) {
+    return 'direct';
+  }
+
+  try {
+    return new URL(normalized).hostname.replace(/^www\./, '').slice(0, 80) || 'direct';
+  } catch {
+    return normalized.slice(0, 80) || 'direct';
+  }
+}
+
+function normalizeVisitLanguage(value) {
+  return stringOrEmpty(value).split(',')[0]?.trim().slice(0, 24) || 'unknown';
+}
+
+function normalizeVisitDimension(value, fallback) {
+  return stringOrEmpty(value).trim().slice(0, 40) || fallback;
+}
+
+function classifyUserAgent(userAgent) {
+  const normalized = stringOrEmpty(userAgent).toLowerCase();
+  const browser = normalized.includes('edg/')
+    ? 'Edge'
+    : normalized.includes('firefox/')
+      ? 'Firefox'
+      : normalized.includes('chrome/')
+        ? 'Chrome'
+        : normalized.includes('safari/')
+          ? 'Safari'
+          : 'Other';
+  const os = normalized.includes('windows')
+    ? 'Windows'
+    : normalized.includes('android')
+      ? 'Android'
+      : /iphone|ipad|ios/.test(normalized)
+        ? 'iOS'
+        : normalized.includes('mac os')
+          ? 'macOS'
+          : normalized.includes('linux')
+            ? 'Linux'
+            : 'Other';
+  const device = /ipad|tablet/.test(normalized)
+    ? 'tablet'
+    : /mobile|android|iphone/.test(normalized)
+      ? 'mobile'
+      : normalized
+        ? 'desktop'
+        : 'unknown';
+
+  return { browser, os, device };
 }
 
 function formatMetricDay(date) {

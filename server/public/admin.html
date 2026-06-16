@@ -1123,6 +1123,12 @@
             </span>
             用户数据
           </button>
+          <button class="nav-button" type="button" data-view="visitors" aria-pressed="false">
+            <span class="nav-icon" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>
+            </span>
+            访问统计
+          </button>
           <button class="nav-button" type="button" data-view="api" aria-pressed="false">
             <span class="nav-icon" aria-hidden="true">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06A2 2 0 1 1 7.03 3.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.17.38.46.7.83.9.29.16.62.24.95.24H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" stroke="currentColor" stroke-width="1.8"/></svg>
@@ -1291,6 +1297,60 @@
               <table>
                 <thead><tr><th>用户信息</th><th>同步数据</th><th>默认语言</th><th>最后状态</th></tr></thead>
                 <tbody id="active-user-table"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="visitors-view" class="view-panel hidden">
+          <div class="page-heading">
+            <div>
+              <p class="breadcrumb">控制台 / 访问统计</p>
+              <h1>访问统计</h1>
+              <p>统计未登录访客和已登录用户的页面访问情况，访客身份以脱敏指纹记录，不保存原始 IP。</p>
+            </div>
+            <button id="refresh-visitors-button" class="primary-button" type="button">刷新统计</button>
+          </div>
+          <div class="stats-grid four">
+            <article class="stat-card"><span class="stat-icon" aria-hidden="true">访</span><div><span>总访问次数</span><strong id="visitor-total">0</strong></div></article>
+            <article class="stat-card"><span class="stat-icon green" aria-hidden="true">客</span><div><span>独立访客</span><strong id="visitor-unique-total">0</strong></div></article>
+            <article class="stat-card"><span class="stat-icon" aria-hidden="true">今</span><div><span>今日访问</span><strong id="visitor-today-total">0</strong></div></article>
+            <article class="stat-card"><span class="stat-icon red" aria-hidden="true">近</span><div><span>最近访问</span><strong id="visitor-latest-at">--</strong></div></article>
+          </div>
+          <div class="data-layout">
+            <section class="panel-card chart-card">
+              <div class="chart-head">
+                <div>
+                  <h2>过去 7 天访问趋势</h2>
+                  <p class="muted">按北京时间统计每天访问次数。</p>
+                </div>
+                <div class="segmented" aria-hidden="true"><span>访问</span></div>
+              </div>
+              <div id="visitor-usage-chart" class="usage-line-chart"></div>
+            </section>
+            <section class="panel-card distribution-card">
+              <h2>设备分布</h2>
+              <div class="distribution-list" id="visitor-device-list"></div>
+              <h2>来源分布</h2>
+              <div class="distribution-list" id="visitor-referrer-list"></div>
+            </section>
+          </div>
+          <section class="panel-card">
+            <div class="panel-head">
+              <div class="panel-title">
+                <span class="panel-title-mark" aria-hidden="true">记</span>
+                <div>
+                  <h2>最近访问记录</h2>
+                  <p>只展示页面、来源、设备和脱敏访客指纹，不展示原始 IP。</p>
+                </div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>页面</th><th>来源</th><th>设备</th><th>浏览器 / 系统</th><th>语言</th><th>访问时间</th><th>匿名指纹</th></tr></thead>
+                <tbody id="visitor-recent-table">
+                  <tr><td colspan="7" class="muted">暂无访问记录</td></tr>
+                </tbody>
               </table>
             </div>
           </section>
@@ -1607,6 +1667,7 @@
       document.querySelector('#logout-button').addEventListener('click', logout);
       document.querySelector('#refresh-users-button').addEventListener('click', loadUsers);
       document.querySelector('#refresh-data-button').addEventListener('click', loadData);
+      document.querySelector('#refresh-visitors-button').addEventListener('click', loadStats);
       document.querySelector('#refresh-notifications-button').addEventListener('click', loadNotifications);
       document.querySelector('#header-notifications-button').addEventListener('click', () => setView('notifications'));
       document.querySelector('#notification-form').addEventListener('submit', saveNotification);
@@ -2262,6 +2323,7 @@
         });
         document.querySelector('#users-view').classList.toggle('hidden', view !== 'users');
         document.querySelector('#data-view').classList.toggle('hidden', view !== 'data');
+        document.querySelector('#visitors-view').classList.toggle('hidden', view !== 'visitors');
         document.querySelector('#api-view').classList.toggle('hidden', view !== 'api');
         document.querySelector('#notifications-view').classList.toggle('hidden', view !== 'notifications');
         document.querySelector('#account-view').classList.toggle('hidden', view !== 'account');
@@ -2270,17 +2332,20 @@
             ? 'Dashboard'
             : view === 'data'
               ? 'User Data'
-              : view === 'api'
-                ? 'API Settings'
-                : view === 'notifications'
-                  ? 'Notifications'
-                  : 'Account Security';
+              : view === 'visitors'
+                ? 'Visitor Analytics'
+                : view === 'api'
+                  ? 'API Settings'
+                  : view === 'notifications'
+                    ? 'Notifications'
+                    : 'Account Security';
       }
 
       function renderAllData() {
         renderSummary();
         renderUsers();
         renderDataView();
+        renderVisitorStats();
       }
 
       function renderSummary() {
@@ -2427,6 +2492,46 @@
         document.querySelector('#active-user-table').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">暂无注册用户</td></tr>';
       }
 
+      function renderVisitorStats() {
+        const metrics = state.metrics || {};
+        const visitors = metrics.visitors || {};
+        const byDay = visitors.byDay || {};
+        const today = beijingDayKey(new Date());
+        const days = recentBeijingDays(7).map((day) => ({
+          ...day,
+          count: Number(byDay[day.key] || 0)
+        }));
+        document.querySelector('#visitor-total').textContent = formatNumber(visitors.total);
+        document.querySelector('#visitor-unique-total').textContent = formatNumber(visitors.uniqueTotal);
+        document.querySelector('#visitor-today-total').textContent = formatNumber(byDay[today] || 0);
+        document.querySelector('#visitor-latest-at').textContent = visitors.latestAt ? formatDate(visitors.latestAt) : '--';
+        document.querySelector('#visitor-usage-chart').innerHTML = renderUsageLineChart(days, '过去 7 天每天访问次数折线图');
+        document.querySelector('#visitor-device-list').innerHTML = renderCounterDistribution(visitors.byDevice, deviceLabel);
+        document.querySelector('#visitor-referrer-list').innerHTML = renderCounterDistribution(visitors.byReferrer, referrerLabel);
+        renderRecentVisitors(visitors.recent);
+      }
+
+      function renderRecentVisitors(recent) {
+        const visits = Array.isArray(recent) ? recent.slice(0, 30) : [];
+        document.querySelector('#visitor-recent-table').innerHTML = visits.length
+          ? visits
+              .map(
+                (visit) => `
+                  <tr>
+                    <td><strong>${escapeHtml(visit.page || '/')}</strong><br /><small class="muted">${escapeHtml(visit.title || '--')}</small></td>
+                    <td>${escapeHtml(referrerLabel(visit.referrer))}</td>
+                    <td>${escapeHtml(deviceLabel(visit.device))}</td>
+                    <td>${escapeHtml(visit.browser || 'Other')} / ${escapeHtml(visit.os || 'Other')}</td>
+                    <td>${escapeHtml(visit.language || 'unknown')}</td>
+                    <td>${formatDate(visit.visitedAt)}</td>
+                    <td><span class="pill">${escapeHtml(String(visit.visitorHash || '').slice(0, 10))}</span></td>
+                  </tr>
+                `
+              )
+              .join('')
+          : '<tr><td colspan="7" class="muted">暂无访问记录</td></tr>';
+      }
+
       function renderTrend() {
         const days = recentBeijingDays(7).map((day) => ({ ...day, count: 0 }));
         state.users.forEach((user) => {
@@ -2448,10 +2553,14 @@
           count: Number(byDay[day.key] || 0)
         }));
 
-        document.querySelector('#translation-usage-chart').innerHTML = renderTranslationUsageLineChart(days);
-      }
+         document.querySelector('#translation-usage-chart').innerHTML = renderTranslationUsageLineChart(days);
+       }
 
       function renderTranslationUsageLineChart(days) {
+        return renderUsageLineChart(days, '过去 7 天每天翻译调用次数折线图');
+      }
+
+      function renderUsageLineChart(days, ariaLabel) {
         const width = 720;
         const height = 280;
         const left = 56;
@@ -2482,7 +2591,7 @@
         `).join('');
 
         return `
-          <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="过去 7 天每天翻译调用次数折线图">
+          <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(ariaLabel)}">
             <defs>
               <linearGradient id="usage-fill-gradient" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stop-color="#0b69c8" stop-opacity="0.22"></stop>
@@ -2495,6 +2604,21 @@
             ${pointMarkup}
           </svg>
         `;
+      }
+
+      function renderCounterDistribution(counter, labeler) {
+        const entries = Object.entries(counter || {})
+          .sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0))
+          .slice(0, 6);
+        const total = Math.max(1, entries.reduce((sum, [, count]) => sum + Number(count || 0), 0));
+        return entries.length
+          ? entries
+              .map(([key, count], index) => {
+                const tone = index === 1 ? 'green' : index === 2 ? 'gray' : '';
+                return `<div class="distribution-row"><span class="dot ${tone}"></span><span>${escapeHtml(labeler(key))}</span><strong>${Math.round((Number(count || 0) / total) * 100)}%</strong></div>`;
+              })
+              .join('')
+          : '<p class="muted">暂无统计数据</p>';
       }
 
       function renderDistribution() {
@@ -2592,6 +2716,20 @@
           ios: 'iOS'
         };
         return labels[value] || value || '未知平台';
+      }
+
+      function deviceLabel(value) {
+        const labels = {
+          desktop: '桌面端',
+          mobile: '手机端',
+          tablet: '平板',
+          unknown: '未知设备'
+        };
+        return labels[value] || value || '未知设备';
+      }
+
+      function referrerLabel(value) {
+        return value === 'direct' ? '直接访问' : value || '未知来源';
       }
 
       function notificationSeverityLabel(value) {

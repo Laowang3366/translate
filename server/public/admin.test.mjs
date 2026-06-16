@@ -83,4 +83,20 @@ describe('admin dashboard translation usage chart', () => {
     expect(html).toContain('function platformLabel(');
     expect(html).toContain('function notificationSeverityLabel(');
   });
+
+  it('exposes a standalone anonymous visitor analytics module', async () => {
+    const html = await readFile(path.resolve('server/public/admin.html'), 'utf8');
+
+    expect(html).toContain('data-view="visitors"');
+    expect(html).toContain('id="visitors-view"');
+    expect(html).toContain('访问统计');
+    expect(html).toContain('id="visitor-total"');
+    expect(html).toContain('id="visitor-unique-total"');
+    expect(html).toContain('id="visitor-usage-chart"');
+    expect(html).toContain('id="visitor-device-list"');
+    expect(html).toContain('id="visitor-referrer-list"');
+    expect(html).toContain('id="visitor-recent-table"');
+    expect(html).toContain('function renderVisitorStats()');
+    expect(html).toContain('metrics.visitors');
+  });
 });

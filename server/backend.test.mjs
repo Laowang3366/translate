@@ -665,6 +665,77 @@ describe('backend app', () => {
     expect(statsResponse.body.metrics.apiCalls.byEndpoint['POST /api/downloads/track']).toBe(1);
   });
 
+  it('tracks anonymous visitor access without requiring user login and redacts raw IP details', async () => {
+    const today = beijingDayKey(new Date());
+    const firstVisitResponse = await app.handleRequest({
+      method: 'POST',
+      url: '/api/visits/track',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'x-forwarded-for': '203.0.113.7'
+      },
+      body: JSON.stringify({
+        visitorId: 'anonymous-device-1',
+        page: '/',
+        title: '快捷翻译首页',
+        referrer: ''
+      })
+    });
+    const secondVisitResponse = await app.handleRequest({
+      method: 'POST',
+      url: '/api/visits/track',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'x-forwarded-for': '203.0.113.7'
+      },
+      body: JSON.stringify({
+        visitorId: 'anonymous-device-1',
+        page: '/download',
+        title: '快捷翻译下载',
+        referrer: 'https://sg.lwvpscc.top/'
+      })
+    });
+    const adminLoginResponse = await request('POST', '/api/admin/login', {
+      username: 'admin',
+      password: 'admin-pass'
+    });
+    const statsResponse = await request('GET', '/api/admin/stats', undefined, adminLoginResponse.body.token);
+
+    expect(firstVisitResponse.status).toBe(200);
+    expect(secondVisitResponse.status).toBe(200);
+    expect(statsResponse.status).toBe(200);
+    expect(statsResponse.body.metrics.visitors).toMatchObject({
+      total: 2,
+      uniqueTotal: 1,
+      byDay: { [today]: 2 },
+      uniqueByDay: { [today]: 1 },
+      byPage: {
+        '/': 1,
+        '/download': 1
+      },
+      byDevice: { desktop: 2 },
+      byBrowser: { Chrome: 2 },
+      byOs: { Windows: 2 },
+      byReferrer: {
+        direct: 1,
+        'sg.lwvpscc.top': 1
+      }
+    });
+    expect(statsResponse.body.metrics.visitors.recent[0]).toMatchObject({
+      page: '/download',
+      title: '快捷翻译下载',
+      browser: 'Chrome',
+      os: 'Windows',
+      device: 'desktop'
+    });
+    expect(statsResponse.body.metrics.visitors.recent[0].visitorHash).toEqual(expect.any(String));
+    expect(JSON.stringify(statsResponse.body.metrics.visitors)).not.toContain('203.0.113.7');
+  });
+
   it('requires the update failure report token and stores accepted reports', async () => {
     const rejectedResponse = await request('POST', '/api/update-failure-reports', {
       source: 'desktop-windows-update'
