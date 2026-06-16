@@ -17,7 +17,8 @@ const eventStreamHeaders = {
   ...jsonHeaders,
   'content-type': 'text/event-stream; charset=utf-8',
   'cache-control': 'no-cache',
-  connection: 'keep-alive'
+  connection: 'keep-alive',
+  'x-accel-buffering': 'no'
 };
 
 const defaultUserState = {

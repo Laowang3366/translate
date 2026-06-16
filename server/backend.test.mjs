@@ -896,6 +896,7 @@ describe('backend app', () => {
       await streamApp.store.waitForMetrics();
       const metrics = await streamApp.store.getMetrics();
 
+      expect(streamResult.headers['x-accel-buffering']).toBe('no');
       expect(events[0]).toMatchObject({ type: 'start', totalChunks: expect.any(Number) });
       expect(events.some((event) => event.type === 'chunk' && event.chunkIndex === 1)).toBe(true);
       expect(events.at(-1)).toMatchObject({
