@@ -12,6 +12,10 @@ function beijingDayKey(date) {
   return new Date(date.getTime() + beijingOffsetMs).toISOString().slice(0, 10);
 }
 
+function repeatedSentence(count, sentence = 'Hello, welcome to Quick Translate. This sentence keeps context stable.') {
+  return Array.from({ length: count }, () => sentence).join(' ');
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-'));
   app = createBackendApp({
@@ -773,6 +777,208 @@ describe('backend app', () => {
       expect(statsResponse.body.metrics.translations.byDay['2026-05-14']).toBeUndefined();
     } finally {
       globalThis.Date = realDate;
+    }
+  });
+
+  it('rejects source text over 30000 characters before calling the translation provider', async () => {
+    const translateSpy = vi.fn();
+    const limitDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-limit-'));
+    const limitApp = createBackendApp({
+      dataDir: limitDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      translateText: translateSpy
+    });
+
+    try {
+      const response = await limitApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'x'.repeat(30_001),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('原文超过 30000 字符限制，请缩短后再翻译');
+      expect(translateSpy).not.toHaveBeenCalled();
+    } finally {
+      await limitApp.store.waitForMetrics();
+      await rm(limitDir, { recursive: true, force: true });
+    }
+  });
+
+  it('splits long plain translations into semantic chunks with consistency instructions', async () => {
+    const calls = [];
+    const chunkDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-chunks-'));
+    const chunkApp = createBackendApp({
+      dataDir: chunkDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      translateText: async (input) => {
+        calls.push(input);
+        const translatedText = `分段译文${calls.length}`.repeat(120);
+        return {
+          sourceText: input.text,
+          targetLanguage: input.targetLanguage,
+          translatedText,
+          provider: input.provider.providerType
+        };
+      }
+    });
+
+    try {
+      const response = await chunkApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: repeatedSentence(140),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(calls.length).toBeGreaterThan(1);
+      expect(calls.every((call) => call.text.length <= 6000)).toBe(true);
+      expect(calls[0].contextInstruction).toContain(`第 1 段，共 ${calls.length} 段`);
+      expect(response.body.translatedText).toBe(calls.map((_call, index) => `分段译文${index + 1}`.repeat(120)).join('\n\n'));
+    } finally {
+      await chunkApp.store.waitForMetrics();
+      await rm(chunkDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retries once when a long plain translation returns an abnormally short result', async () => {
+    const logger = { error: vi.fn(), warn: vi.fn(), log: vi.fn() };
+    let attempts = 0;
+    const retryDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-quality-retry-'));
+    const retryApp = createBackendApp({
+      dataDir: retryDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      logger,
+      translateText: async ({ text, targetLanguage, provider }) => {
+        attempts += 1;
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: attempts === 1 ? '短' : '这是第二次请求返回的完整译文。'.repeat(80),
+          provider: provider.providerType
+        };
+      }
+    });
+
+    try {
+      const response = await retryApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: repeatedSentence(30, 'Secret source text should never appear in quality logs.'),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(attempts).toBe(2);
+      expect(response.body.translatedText).toContain('完整译文');
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[translate:quality-warning]',
+        expect.objectContaining({
+          providerType: 'deepseek-compatible',
+          model: 'deepseek-v4-flash',
+          chunkIndex: 1,
+          reason: 'translated-too-short'
+        })
+      );
+      const loggedPayload = JSON.stringify(logger.warn.mock.calls);
+      expect(loggedPayload).not.toContain('Secret source text');
+      expect(loggedPayload).not.toContain('sk-secret');
+    } finally {
+      await retryApp.store.waitForMetrics();
+      await rm(retryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a clear error after translation quality retry still fails', async () => {
+    const logger = { error: vi.fn(), warn: vi.fn(), log: vi.fn() };
+    let attempts = 0;
+    const retryDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-quality-failed-'));
+    const retryApp = createBackendApp({
+      dataDir: retryDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      logger,
+      translateText: async ({ text, targetLanguage, provider }) => {
+        attempts += 1;
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: '短',
+          provider: provider.providerType
+        };
+      }
+    });
+
+    try {
+      const response = await retryApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: repeatedSentence(30, 'Another secret source text should not be logged.'),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(502);
+      expect(response.body.error).toBe('翻译结果异常，请稍后重试或缩短文本');
+      expect(attempts).toBe(2);
+      const loggedPayload = JSON.stringify([...logger.warn.mock.calls, ...logger.error.mock.calls]);
+      expect(loggedPayload).not.toContain('Another secret source text');
+      expect(loggedPayload).not.toContain('sk-secret');
+    } finally {
+      await retryApp.store.waitForMetrics();
+      await rm(retryDir, { recursive: true, force: true });
     }
   });
 

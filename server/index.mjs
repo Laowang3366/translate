@@ -27,11 +27,12 @@ const app = createBackendApp({
     model: providerModel,
     requestTimeoutMinutes: providerRequestTimeoutMinutes
   },
-  translateText: ({ text, targetLanguage, translationFormat, provider, timeoutMs }) =>
+  translateText: ({ text, targetLanguage, translationFormat, contextInstruction, provider, timeoutMs }) =>
     translateText({
       text,
       targetLanguage,
       translationFormat,
+      contextInstruction,
       timeoutMs,
       provider: {
         type: provider.providerType === 'mock' ? 'mock' : 'openai-compatible',

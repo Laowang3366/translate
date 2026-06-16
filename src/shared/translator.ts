@@ -23,6 +23,7 @@ export type TranslateTextInput = {
   text: string;
   targetLanguage: string;
   translationFormat?: TranslationFormat;
+  contextInstruction?: string;
   provider: TranslationProvider;
   fetcher?: typeof fetch;
   timeoutMs?: number;
@@ -98,6 +99,7 @@ export async function translateText(input: TranslateTextInput): Promise<Translat
     sourceText,
     targetLanguage: input.targetLanguage,
     translationFormat: input.translationFormat,
+    contextInstruction: input.contextInstruction,
     provider: input.provider,
     fetcher,
     timeoutMs: input.timeoutMs,
@@ -129,6 +131,7 @@ async function translateWithOpenAICompatibleProvider(input: {
   sourceText: string;
   targetLanguage: string;
   translationFormat?: TranslationFormat;
+  contextInstruction?: string;
   provider: OpenAICompatibleProvider;
   fetcher: typeof fetch;
   timeoutMs?: number;
@@ -157,6 +160,7 @@ async function requestOpenAICompatibleTranslation(input: {
   sourceText: string;
   targetLanguage: string;
   translationFormat?: TranslationFormat;
+  contextInstruction?: string;
   provider: OpenAICompatibleProvider;
   fetcher: typeof fetch;
   timeoutMs?: number;
@@ -174,6 +178,8 @@ async function requestOpenAICompatibleTranslation(input: {
       translationFormat.value === 'plain'
         ? `Translate the user text into ${targetLanguageName} (${input.targetLanguage}). ${translationFormat.instruction}`
         : `Convert the user text into a code-friendly English name. Output format: ${translationFormat.label}. ${translationFormat.instruction}`;
+    const contextInstruction = input.contextInstruction?.trim();
+    const prompt = contextInstruction ? `${systemPrompt}\n${contextInstruction}` : systemPrompt;
     const response = await input.fetcher(`${input.provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -185,7 +191,7 @@ async function requestOpenAICompatibleTranslation(input: {
         messages: [
           {
             role: 'system',
-            content: systemPrompt
+            content: prompt
           },
           { role: 'user', content: input.sourceText }
         ],

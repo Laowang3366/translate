@@ -29,6 +29,9 @@ const defaultUpdateReportToken = 'quick-translate-update-report-v1';
 const beijingOffsetMs = 8 * 60 * 60 * 1000;
 const defaultProviderRequestTimeoutMinutes = 5;
 const maxProviderRequestTimeoutMinutes = 30;
+const maxTranslationSourceChars = 30_000;
+const longTranslationChunkChars = 6_000;
+const maxTranslationQualityAttempts = 2;
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -212,14 +215,20 @@ export function createBackendApp(options = {}) {
       if (method === 'POST' && pathname === '/api/translate') {
         const body = await readJsonBody(request);
         const provider = await store.getProvider();
+        const text = stringOrEmpty(body.text).trim();
         if (typeof translateText !== 'function') {
           return createJsonResponse(501, { error: '服务器翻译通道未启用' });
+        }
+        if (text.length > maxTranslationSourceChars) {
+          throw new HttpError(400, '原文超过 30000 字符限制，请缩短后再翻译');
         }
         const startedAt = Date.now();
         let result;
         try {
-          result = await translateText({
-            text: stringOrEmpty(body.text),
+          result = await translateTextWithBackendGuards({
+            translateText,
+            logger,
+            text,
             targetLanguage: stringOrEmpty(body.targetLanguage) || 'zh-CN',
             translationFormat: stringOrEmpty(body.translationFormat) || 'plain',
             provider,
@@ -793,6 +802,198 @@ function createTranslationHttpError(error) {
   return new HttpError(inferTranslationErrorStatus(error), safeTranslationErrorMessage(error));
 }
 
+async function translateTextWithBackendGuards(input) {
+  const chunks = shouldChunkTranslation(input.text, input.translationFormat)
+    ? splitTextIntoSemanticChunks(input.text, longTranslationChunkChars)
+    : [input.text];
+  const translatedChunks = [];
+  let lastResult = null;
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    lastResult = await translateChunkWithQualityRetry({
+      ...input,
+      text: chunks[index],
+      chunkIndex: index + 1,
+      chunkCount: chunks.length,
+      contextInstruction: chunks.length > 1 ? buildChunkContextInstruction(index + 1, chunks.length) : ''
+    });
+    translatedChunks.push(lastResult.translatedText);
+  }
+
+  if (chunks.length === 1) {
+    return lastResult;
+  }
+
+  return {
+    provider: lastResult?.provider ?? 'openai-compatible',
+    sourceText: input.text,
+    targetLanguage: input.targetLanguage,
+    translatedText: translatedChunks.join('\n\n')
+  };
+}
+
+async function translateChunkWithQualityRetry(input) {
+  let lastResult = null;
+  for (let attempt = 1; attempt <= maxTranslationQualityAttempts; attempt += 1) {
+    const startedAt = Date.now();
+    const result = await input.translateText({
+      text: input.text,
+      targetLanguage: input.targetLanguage,
+      translationFormat: input.translationFormat,
+      contextInstruction: input.contextInstruction,
+      provider: input.provider,
+      timeoutMs: input.timeoutMs
+    });
+    lastResult = result;
+    const qualityIssue = translationQualityIssue({
+      sourceText: input.text,
+      translatedText: result.translatedText,
+      translationFormat: input.translationFormat
+    });
+
+    if (!qualityIssue) {
+      return result;
+    }
+
+    logTranslationQualityWarning(input.logger, {
+      provider: input.provider,
+      reason: qualityIssue,
+      attempt,
+      chunkIndex: input.chunkIndex,
+      chunkCount: input.chunkCount,
+      sourceLength: input.text.length,
+      translatedLength: stringOrEmpty(result.translatedText).trim().length,
+      durationMs: Date.now() - startedAt
+    });
+  }
+
+  throw new HttpError(502, '翻译结果异常，请稍后重试或缩短文本');
+}
+
+function shouldChunkTranslation(text, translationFormat) {
+  return (stringOrEmpty(translationFormat) || 'plain') === 'plain' && text.length > longTranslationChunkChars;
+}
+
+function buildChunkContextInstruction(chunkIndex, chunkCount) {
+  return `长文本分段翻译：这是第 ${chunkIndex} 段，共 ${chunkCount} 段。保持术语、人名、上下文、语气、编号和格式一致；只输出当前段译文，不要总结，不要省略，不要解释。`;
+}
+
+function translationQualityIssue(input) {
+  if ((stringOrEmpty(input.translationFormat) || 'plain') !== 'plain') {
+    return '';
+  }
+
+  const sourceLength = stringOrEmpty(input.sourceText).trim().length;
+  const translatedText = stringOrEmpty(input.translatedText).trim();
+  if (!translatedText) {
+    return 'empty-translated-text';
+  }
+
+  if (looksLikeProviderFailureMessage(translatedText)) {
+    return 'provider-error-message';
+  }
+
+  if (sourceLength >= 1_000) {
+    const minimumTranslatedLength = Math.max(80, Math.floor(sourceLength * 0.03));
+    if (translatedText.length < minimumTranslatedLength) {
+      return 'translated-too-short';
+    }
+  }
+
+  return '';
+}
+
+function looksLikeProviderFailureMessage(value) {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes('cannot translate') ||
+    normalized.includes("can't translate") ||
+    normalized.includes('unable to translate') ||
+    normalized.includes('无法翻译') ||
+    normalized.includes('不能翻译') ||
+    normalized.includes('翻译失败')
+  );
+}
+
+function splitTextIntoSemanticChunks(text, maxChars) {
+  const normalizedText = stringOrEmpty(text);
+  if (normalizedText.length <= maxChars) {
+    return [normalizedText];
+  }
+
+  const units = splitIntoSemanticUnits(normalizedText, maxChars);
+  const chunks = [];
+  let current = '';
+
+  units.forEach((unit) => {
+    if (!unit) {
+      return;
+    }
+    if (!current) {
+      current = unit;
+      return;
+    }
+    if (current.length + unit.length <= maxChars) {
+      current += unit;
+      return;
+    }
+
+    chunks.push(current.trim());
+    current = unit;
+  });
+
+  if (current.trim()) {
+    chunks.push(current.trim());
+  }
+
+  return chunks.filter(Boolean);
+}
+
+function splitIntoSemanticUnits(text, maxChars) {
+  return text
+    .split(/(\n{2,})/)
+    .reduce((units, part, index, parts) => {
+      if (!part) {
+        return units;
+      }
+      if (/^\n{2,}$/.test(part)) {
+        const previous = units.pop() || '';
+        units.push(`${previous}${part}`);
+        return units;
+      }
+
+      if (part.length <= maxChars) {
+        units.push(part);
+        return units;
+      }
+
+      splitLongSemanticUnit(part, maxChars).forEach((unit) => units.push(unit));
+      return units;
+    }, []);
+}
+
+function splitLongSemanticUnit(text, maxChars) {
+  const sentenceUnits = text.match(/[^。！？!?；;.\n]+[。！？!?；;.]?\s*/g) || [text];
+  return sentenceUnits.flatMap((unit) => (unit.length > maxChars ? hardSplitUnit(unit, maxChars) : [unit]));
+}
+
+function hardSplitUnit(text, maxChars) {
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > maxChars) {
+    let splitIndex = remaining.lastIndexOf(' ', maxChars);
+    if (splitIndex < Math.floor(maxChars * 0.6)) {
+      splitIndex = maxChars;
+    }
+    chunks.push(remaining.slice(0, splitIndex).trimEnd());
+    remaining = remaining.slice(splitIndex).trimStart();
+  }
+  if (remaining) {
+    chunks.push(remaining);
+  }
+  return chunks;
+}
+
 function inferTranslationErrorStatus(error) {
   const status = errorStatus(error);
   if (isAbortError(error) || safeTranslationErrorMessage(error).includes('超时')) {
@@ -820,6 +1021,27 @@ function logTranslationError(logger, input) {
     upstreamStatus: errorStatus(input.error),
     errorName: errorName(input.error),
     errorMessage: safeTranslationErrorMessage(input.error)
+  });
+}
+
+function logTranslationQualityWarning(logger, input) {
+  const warn = typeof logger?.warn === 'function' ? logger.warn.bind(logger) : undefined;
+  if (!warn) {
+    return;
+  }
+
+  warn('[translate:quality-warning]', {
+    providerName: stringOrEmpty(input.provider?.name),
+    providerType: stringOrEmpty(input.provider?.providerType),
+    baseUrl: stringOrEmpty(input.provider?.baseUrl),
+    model: stringOrEmpty(input.provider?.model),
+    reason: stringOrEmpty(input.reason),
+    attempt: nonNegativeNumber(input.attempt),
+    chunkIndex: nonNegativeNumber(input.chunkIndex),
+    chunkCount: nonNegativeNumber(input.chunkCount),
+    sourceLength: nonNegativeNumber(input.sourceLength),
+    translatedLength: nonNegativeNumber(input.translatedLength),
+    durationMs: nonNegativeNumber(input.durationMs)
   });
 }
 

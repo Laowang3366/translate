@@ -114,6 +114,37 @@ describe('translateText', () => {
     expect(JSON.parse(String(init.body)).messages[0].content).toContain('Java-style lowerCamelCase identifier');
   });
 
+  it('adds long-text chunk context to the OpenAI-compatible system prompt without enabling search or reasoning', async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '分段译文' } }]
+      })
+    });
+
+    await translateText({
+      text: 'Long chunk',
+      targetLanguage: 'zh-CN',
+      contextInstruction: '长文本分段翻译：这是第 1 段，共 3 段。保持术语、人名、上下文一致；只输出当前段译文。',
+      provider: {
+        type: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'secret',
+        model: 'gpt-4.1-mini'
+      },
+      fetcher
+    });
+
+    const [, init] = fetcher.mock.calls[0];
+    const body = JSON.parse(String(init.body));
+    expect(body.messages[0].content).toContain('长文本分段翻译：这是第 1 段，共 3 段');
+    expect(body).not.toHaveProperty('reasoning');
+    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body).not.toHaveProperty('thinking');
+    expect(body).not.toHaveProperty('enable_search');
+    expect(body).not.toHaveProperty('web_search');
+  });
+
   it('rejects empty source text before calling a provider', async () => {
     const fetcher = vi.fn();
 
