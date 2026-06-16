@@ -54,6 +54,7 @@ export function createBackendApp(options = {}) {
   const adminUsername = options.adminUsername ?? process.env.QUICK_TRANSLATE_ADMIN_USER ?? 'admin';
   const adminPassword = options.adminPassword ?? process.env.QUICK_TRANSLATE_ADMIN_PASSWORD ?? 'admin123456';
   const updateReportToken = options.updateReportToken ?? process.env.QUICK_TRANSLATE_UPDATE_REPORT_TOKEN ?? defaultUpdateReportToken;
+  const logger = options.logger ?? console;
   const store = createJsonStore({
     dataDir: options.dataDir ?? path.join(process.cwd(), 'data'),
     defaultProvider: options.defaultProvider,
@@ -205,12 +206,23 @@ export function createBackendApp(options = {}) {
         if (typeof translateText !== 'function') {
           return createJsonResponse(501, { error: '服务器翻译通道未启用' });
         }
-        const result = await translateText({
-          text: stringOrEmpty(body.text),
-          targetLanguage: stringOrEmpty(body.targetLanguage) || 'zh-CN',
-          translationFormat: stringOrEmpty(body.translationFormat) || 'plain',
-          provider
-        });
+        const startedAt = Date.now();
+        let result;
+        try {
+          result = await translateText({
+            text: stringOrEmpty(body.text),
+            targetLanguage: stringOrEmpty(body.targetLanguage) || 'zh-CN',
+            translationFormat: stringOrEmpty(body.translationFormat) || 'plain',
+            provider
+          });
+        } catch (error) {
+          logTranslationError(logger, {
+            error,
+            provider,
+            durationMs: Date.now() - startedAt
+          });
+          throw createTranslationHttpError(error);
+        }
         await store.recordTranslationEvent();
         return createJsonResponse(200, result);
       }
@@ -745,6 +757,60 @@ function createResponse(status, body = '', headers = jsonHeaders) {
 
 function createJsonResponse(status, body) {
   return createResponse(status, body, jsonHeaders);
+}
+
+function createTranslationHttpError(error) {
+  if (error instanceof HttpError) {
+    return error;
+  }
+
+  return new HttpError(inferTranslationErrorStatus(error), safeTranslationErrorMessage(error));
+}
+
+function inferTranslationErrorStatus(error) {
+  const status = errorStatus(error);
+  if (isAbortError(error) || safeTranslationErrorMessage(error).includes('超时')) {
+    return 504;
+  }
+  if (typeof status === 'number' && status >= 400) {
+    return 502;
+  }
+
+  return 502;
+}
+
+function logTranslationError(logger, input) {
+  const log = typeof logger?.error === 'function' ? logger.error.bind(logger) : undefined;
+  if (!log) {
+    return;
+  }
+
+  log('[translate:error]', {
+    providerName: stringOrEmpty(input.provider?.name),
+    providerType: stringOrEmpty(input.provider?.providerType),
+    baseUrl: stringOrEmpty(input.provider?.baseUrl),
+    model: stringOrEmpty(input.provider?.model),
+    durationMs: input.durationMs,
+    upstreamStatus: errorStatus(input.error),
+    errorName: errorName(input.error),
+    errorMessage: safeTranslationErrorMessage(input.error)
+  });
+}
+
+function errorStatus(error) {
+  return isRecord(error) && Number.isInteger(error.status) ? error.status : undefined;
+}
+
+function errorName(error) {
+  return error instanceof Error && error.name ? error.name : 'Error';
+}
+
+function safeTranslationErrorMessage(error) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return '翻译接口请求失败，请稍后重试';
 }
 
 function requireAuth(request, secret, role) {

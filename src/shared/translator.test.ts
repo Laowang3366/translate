@@ -220,6 +220,32 @@ describe('translateText', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps translation request error metadata for backend logging', async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({ error: { message: 'rate limit' } })
+    });
+
+    await expect(
+      translateText({
+        text: 'hello',
+        targetLanguage: 'zh-CN',
+        provider: {
+          type: 'openai-compatible',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'secret',
+          model: 'gpt-4.1-mini'
+        },
+        fetcher,
+        maxRetries: 0
+      })
+    ).rejects.toMatchObject({
+      name: 'TranslationRequestError',
+      status: 429
+    });
+  });
+
   it('rejects empty OpenAI-compatible translation results with a Chinese error', async () => {
     const fetcher = vi.fn().mockResolvedValue({
       ok: true,

@@ -25,6 +25,13 @@ describe('admin dashboard translation usage chart', () => {
     expect(html).toContain('function closeProviderDialog()');
   });
 
+  it('does not inject a hard-coded fallback model into provider configuration', async () => {
+    const html = await readFile(path.resolve('server/public/admin.html'), 'utf8');
+
+    expect(html).not.toContain('gpt-5.4-mini');
+    expect(html).toContain('请先获取模型列表');
+  });
+
   it('exposes an admin account security view for changing email and password', async () => {
     const html = await readFile(path.resolve('server/public/admin.html'), 'utf8');
 

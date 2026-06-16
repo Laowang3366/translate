@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBackendApp } from './backend.mjs';
 
 let tempDir;
@@ -631,6 +631,63 @@ describe('backend app', () => {
       expect(statsResponse.body.metrics.translations.byDay['2026-05-14']).toBeUndefined();
     } finally {
       globalThis.Date = realDate;
+    }
+  });
+
+  it('returns a clear translation timeout and logs safe provider metadata', async () => {
+    const logger = { error: vi.fn(), warn: vi.fn(), log: vi.fn() };
+    const timeoutDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-timeout-'));
+    const timeoutApp = createBackendApp({
+      dataDir: timeoutDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      logger,
+      translateText: async () => {
+        const error = new Error('翻译接口请求超时，请稍后重试');
+        error.name = 'TranslationRequestError';
+        error.retryable = true;
+        throw error;
+      }
+    });
+
+    try {
+      const response = await timeoutApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'secret source text',
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(504);
+      expect(response.body.error).toBe('翻译接口请求超时，请稍后重试');
+      expect(logger.error).toHaveBeenCalledWith(
+        '[translate:error]',
+        expect.objectContaining({
+          providerType: 'deepseek-compatible',
+          baseUrl: 'https://api.deepseek.com',
+          model: 'deepseek-v4-flash',
+          errorName: 'TranslationRequestError',
+          errorMessage: '翻译接口请求超时，请稍后重试'
+        })
+      );
+      const loggedPayload = JSON.stringify(logger.error.mock.calls);
+      expect(loggedPayload).not.toContain('secret source text');
+      expect(loggedPayload).not.toContain('sk-secret');
+    } finally {
+      await timeoutApp.store.waitForMetrics();
+      await rm(timeoutDir, { recursive: true, force: true });
     }
   });
 

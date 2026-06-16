@@ -9,8 +9,8 @@ describe('backend provider settings', () => {
     expect(packagedProviderSettings).toEqual({
       providerType: 'mock',
       apiKey: '',
-      baseUrl: 'https://ussub.lwvpscc.top/v1',
-      model: 'gpt-5.4-mini'
+      baseUrl: '',
+      model: ''
     });
     expect(loadBackendProviderSettings({ env: {} })).toEqual(packagedProviderSettings);
   });

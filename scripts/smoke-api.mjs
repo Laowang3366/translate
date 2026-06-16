@@ -1,12 +1,12 @@
 const apiKey = process.env.TRANSLATE_API_KEY || process.env.OPENAI_API_KEY || '';
-const baseUrl = (process.env.TRANSLATE_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-const model = process.env.TRANSLATE_MODEL || 'gpt-4.1-mini';
+const baseUrl = (process.env.TRANSLATE_BASE_URL || '').replace(/\/$/, '');
+const model = process.env.TRANSLATE_MODEL || '';
 const text = process.env.TRANSLATE_SMOKE_TEXT || 'hello';
 const targetLanguage = process.env.TRANSLATE_SMOKE_TARGET || 'zh-CN';
 const requireKey = process.argv.includes('--require-key');
 
-if (!apiKey) {
-  const message = '[接口冒烟] 未设置 TRANSLATE_API_KEY 或 OPENAI_API_KEY，跳过真实接口冒烟。';
+if (!apiKey || !baseUrl || !model) {
+  const message = '[接口冒烟] 未完整设置 TRANSLATE_API_KEY/OPENAI_API_KEY、TRANSLATE_BASE_URL、TRANSLATE_MODEL，跳过真实接口冒烟。';
   if (requireKey) {
     console.error(message);
     process.exit(1);

@@ -53,7 +53,6 @@ import {
 } from './floatingSessionPreferences.js';
 import { createFloatingShortcutRunner, type FloatingShortcutContext, type FloatingShortcutResultOptions } from './floatingShortcutHandler.js';
 import { startMouseButton4Shortcut, type MouseButton4Shortcut } from './mouseButton4Shortcut.js';
-import { getProviderSettingsPath, loadBackendProviderSettings } from './providerSettings.js';
 import { applyLightweightRuntime } from './runtimeOptimization.js';
 import {
   clearUpdatePackageArtifacts,
@@ -62,8 +61,6 @@ import {
 } from './updatePackageDirectory.js';
 import { createFloatingWindowOptions, createMainWindowOptions } from './windowOptions.js';
 import { createWindowsCopyShortcutSender } from './windowsCopyShortcut.js';
-import { createProviderFromSettings } from '../shared/providerSettings.js';
-import { translateText } from '../shared/translator.js';
 import { normalizeTranslationFormat, type TranslationFormat } from '../shared/translationFormats.js';
 
 const execFileAsync = promisify(execFile);
@@ -434,38 +431,10 @@ function saveDesktopSettings(settings: DesktopSettings) {
   writeFileSync(getDesktopSettingsPath(), serializeDesktopSettings(settings), 'utf8');
 }
 
-function getBackendProviderSettingsPath() {
-  return getProviderSettingsPath(app.getPath('userData'));
-}
-
-function loadCurrentProvider() {
-  return createProviderFromSettings(
-    loadBackendProviderSettings({
-      settingsPath: getBackendProviderSettingsPath(),
-      env: process.env
-    })
-  );
-}
-
 async function translateUsingConfiguredChannel(request: { text: string; targetLanguage: string; translationFormat: TranslationFormat }) {
-  const directProvider = loadCurrentProvider();
-
-  try {
-    return await translateWithBackend(request, {
-      baseUrl: resolveDesktopBackendBaseUrl(process.env)
-    });
-  } catch (error) {
-    if (directProvider.type === 'openai-compatible') {
-      return translateText({
-        text: request.text,
-        targetLanguage: request.targetLanguage,
-        translationFormat: request.translationFormat,
-        provider: directProvider
-      });
-    }
-
-    throw error;
-  }
+  return translateWithBackend(request, {
+    baseUrl: resolveDesktopBackendBaseUrl(process.env)
+  });
 }
 
 function setFloatingTranslateShortcut(shortcut: FloatingTranslateShortcut) {

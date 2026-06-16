@@ -12,8 +12,8 @@ const providerTypes = new Set<ProviderType>(['mock', 'openai-compatible']);
 export const packagedProviderSettings: ProviderSettings = {
   providerType: 'mock',
   apiKey: '',
-  baseUrl: 'https://ussub.lwvpscc.top/v1',
-  model: 'gpt-5.4-mini'
+  baseUrl: '',
+  model: ''
 };
 
 export function getProviderSettingsPath(userDataPath: string) {

@@ -12,21 +12,23 @@ export type ProviderSettings = {
 export const defaultProviderSettings: ProviderSettings = {
   providerType: 'mock',
   apiKey: '',
-  baseUrl: 'https://api.openai.com/v1',
-  model: 'gpt-4.1-mini'
+  baseUrl: '',
+  model: ''
 };
 
 export function createProviderFromSettings(settings: ProviderSettings): TranslationProvider {
   const apiKey = settings.apiKey.trim();
+  const baseUrl = settings.baseUrl.trim();
+  const model = settings.model.trim();
 
-  if (settings.providerType !== 'openai-compatible' || !apiKey) {
+  if (settings.providerType !== 'openai-compatible' || !apiKey || !baseUrl || !model) {
     return { type: 'mock' };
   }
 
   return {
     type: 'openai-compatible',
     apiKey,
-    baseUrl: (settings.baseUrl.trim() || defaultProviderSettings.baseUrl).replace(/\/$/, ''),
-    model: settings.model.trim() || defaultProviderSettings.model
+    baseUrl: baseUrl.replace(/\/$/, ''),
+    model
   };
 }

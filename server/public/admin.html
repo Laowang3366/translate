@@ -1361,7 +1361,7 @@
                 <span>模型名称</span>
                 <div class="model-field">
                   <select id="model" aria-label="模型名称">
-                    <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                    <option value="" disabled selected>请先获取模型列表</option>
                   </select>
                   <button id="load-models-button" class="text-button" type="button">获取模型</button>
                 </div>
@@ -1793,7 +1793,7 @@
         document.querySelector('#provider-name').value = '';
         document.querySelector('#provider-type').value = 'openai-compatible';
         document.querySelector('#base-url').value = '';
-        renderModelOptions(['gpt-5.4-mini'], 'gpt-5.4-mini');
+        renderModelOptions([], '');
         const apiKeyInput = document.querySelector('#api-key');
         apiKeyInput.value = '';
         apiKeyInput.disabled = false;
@@ -1919,7 +1919,7 @@
         const modelSelect = document.querySelector('#model');
         modelSelect.innerHTML = normalizedModels.length
           ? normalizedModels.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join('')
-          : '<option value="gpt-5.4-mini">gpt-5.4-mini</option>';
+          : '<option value="" disabled selected>请先获取模型列表</option>';
         modelSelect.value = selectedModel && normalizedModels.includes(selectedModel) ? selectedModel : modelSelect.options[0]?.value || '';
       }
 

@@ -11,6 +11,8 @@ const port = Number(process.env.PORT ?? process.env.QUICK_TRANSLATE_PORT ?? 8787
 const dataDir = process.env.QUICK_TRANSLATE_DATA_DIR ?? path.join(projectRoot, 'server-data');
 const maxBodyBytes = Number(process.env.QUICK_TRANSLATE_MAX_BODY_BYTES ?? 1_048_576);
 const providerApiKey = process.env.TRANSLATE_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
+const providerBaseUrl = process.env.TRANSLATE_BASE_URL ?? '';
+const providerModel = process.env.TRANSLATE_MODEL ?? '';
 
 const app = createBackendApp({
   dataDir,
@@ -18,10 +20,10 @@ const app = createBackendApp({
   adminUsername: process.env.QUICK_TRANSLATE_ADMIN_USER,
   adminPassword: process.env.QUICK_TRANSLATE_ADMIN_PASSWORD,
   defaultProvider: {
-    providerType: process.env.TRANSLATE_PROVIDER ?? (providerApiKey ? 'openai-compatible' : 'mock'),
-    baseUrl: process.env.TRANSLATE_BASE_URL ?? 'https://ussub.lwvpscc.top/v1',
+    providerType: process.env.TRANSLATE_PROVIDER ?? (providerApiKey && providerBaseUrl && providerModel ? 'openai-compatible' : 'mock'),
+    baseUrl: providerBaseUrl,
     apiKey: providerApiKey,
-    model: process.env.TRANSLATE_MODEL ?? 'gpt-5.4-mini'
+    model: providerModel
   },
   translateText: ({ text, targetLanguage, translationFormat, provider }) =>
     translateText({
