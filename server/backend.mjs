@@ -32,6 +32,7 @@ const maxProviderRequestTimeoutMinutes = 30;
 const maxTranslationSourceChars = 30_000;
 const longTranslationChunkChars = 6_000;
 const maxTranslationQualityAttempts = 2;
+const longTranslationChunkConcurrency = 2;
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -806,24 +807,40 @@ async function translateTextWithBackendGuards(input) {
   const chunks = shouldChunkTranslation(input.text, input.translationFormat)
     ? splitTextIntoSemanticChunks(input.text, longTranslationChunkChars)
     : [input.text];
-  const translatedChunks = [];
-  let lastResult = null;
-
-  for (let index = 0; index < chunks.length; index += 1) {
-    lastResult = await translateChunkWithQualityRetry({
-      ...input,
-      text: chunks[index],
-      chunkIndex: index + 1,
-      chunkCount: chunks.length,
-      contextInstruction: chunks.length > 1 ? buildChunkContextInstruction(index + 1, chunks.length) : ''
-    });
-    translatedChunks.push(lastResult.translatedText);
-  }
 
   if (chunks.length === 1) {
-    return lastResult;
+    return translateChunkWithQualityRetry({
+      ...input,
+      text: chunks[0],
+      chunkIndex: 1,
+      chunkCount: 1,
+      contextInstruction: ''
+    });
   }
 
+  const translatedChunks = new Array(chunks.length);
+  const results = new Array(chunks.length);
+  let nextChunkIndex = 0;
+  const workerCount = Math.min(longTranslationChunkConcurrency, chunks.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextChunkIndex < chunks.length) {
+        const index = nextChunkIndex;
+        nextChunkIndex += 1;
+        const result = await translateChunkWithQualityRetry({
+          ...input,
+          text: chunks[index],
+          chunkIndex: index + 1,
+          chunkCount: chunks.length,
+          contextInstruction: buildChunkContextInstruction(index + 1, chunks.length)
+        });
+        results[index] = result;
+        translatedChunks[index] = result.translatedText;
+      }
+    })
+  );
+
+  const lastResult = results.find(Boolean);
   return {
     provider: lastResult?.provider ?? 'openai-compatible',
     sourceText: input.text,

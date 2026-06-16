@@ -869,6 +869,61 @@ describe('backend app', () => {
     }
   });
 
+  it('translates long chunks with bounded concurrency while preserving output order', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const calls = [];
+    const chunkDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-chunk-concurrency-'));
+    const chunkApp = createBackendApp({
+      dataDir: chunkDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      translateText: async (input) => {
+        const order = calls.length + 1;
+        calls.push(input);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, order === 1 ? 8 : 1));
+        inFlight -= 1;
+        return {
+          sourceText: input.text,
+          targetLanguage: input.targetLanguage,
+          translatedText: `有序译文${order}`.repeat(120),
+          provider: input.provider.providerType
+        };
+      }
+    });
+
+    try {
+      const response = await chunkApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: repeatedSentence(180),
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(2);
+      expect(response.body.translatedText).toBe(calls.map((_call, index) => `有序译文${index + 1}`.repeat(120)).join('\n\n'));
+    } finally {
+      await chunkApp.store.waitForMetrics();
+      await rm(chunkDir, { recursive: true, force: true });
+    }
+  });
+
   it('retries once when a long plain translation returns an abnormally short result', async () => {
     const logger = { error: vi.fn(), warn: vi.fn(), log: vi.fn() };
     let attempts = 0;
