@@ -234,6 +234,10 @@
         overflow-wrap: anywhere;
       }
 
+      .demo-result.pending {
+        color: #667085;
+      }
+
       .demo-status {
         min-height: 18px;
         color: rgba(255, 255, 255, 0.72);
@@ -815,6 +819,7 @@
       const demoTargetLanguageLabel = document.querySelector('#demo-target-language-label');
       let demoTranslateTimer = 0;
       let demoRequestId = 0;
+      let demoResultAnimationTimer = 0;
 
       function detectSourceLanguage(text) {
         const normalizedText = text.trim();
@@ -910,14 +915,52 @@
         if (!response.ok) {
           throw new Error(payload.error || '翻译失败');
         }
-        demoResult.textContent = payload.translatedText || '未返回译文';
+        void animateDemoResultText(payload.translatedText || '未返回译文', requestId);
         demoStatus.textContent = '翻译完成。';
+      }
+
+      function stopDemoResultAnimation() {
+        window.clearTimeout(demoResultAnimationTimer);
+        demoResultAnimationTimer = 0;
+      }
+
+      function setDemoPendingResult(text) {
+        stopDemoResultAnimation();
+        demoResult.classList.add('pending');
+        demoResult.textContent = text;
+      }
+
+      function setDemoResultText(text) {
+        stopDemoResultAnimation();
+        demoResult.classList.remove('pending');
+        demoResult.textContent = text;
+      }
+
+      function animateDemoResultText(targetText, requestId) {
+        stopDemoResultAnimation();
+        const normalizedText = String(targetText || '').trim() || '未返回译文';
+        demoResult.classList.remove('pending');
+        const stepSize = Math.max(1, Math.ceil(normalizedText.length / 120));
+        let cursor = 0;
+
+        const tick = () => {
+          if (requestId !== demoRequestId) {
+            return;
+          }
+          cursor = Math.min(normalizedText.length, cursor + stepSize);
+          demoResult.textContent = normalizedText.slice(0, cursor);
+          if (cursor < normalizedText.length) {
+            demoResultAnimationTimer = window.setTimeout(tick, 16);
+          }
+        };
+
+        tick();
       }
 
       function updateDemoStreamedResult(streamedChunks, chunkCount) {
         const parts = Array.from({ length: chunkCount }, (_, index) => streamedChunks.get(index + 1) || '').filter(Boolean);
         if (parts.length) {
-          demoResult.textContent = parts.join('\n\n');
+          setDemoResultText(parts.join('\n\n'));
         }
       }
 
@@ -926,12 +969,12 @@
         const requestId = ++demoRequestId;
         updateDemoMeta();
         if (!text) {
-          demoResult.textContent = '翻译结果会显示在这里';
+          setDemoResultText('翻译结果会显示在这里');
           demoStatus.textContent = '输入内容后会自动翻译。';
           return;
         }
 
-        demoResult.textContent = '';
+        setDemoPendingResult('正在等待模型输出...');
         demoStatus.textContent = '正在连接翻译通道...';
         try {
           const response = await fetch(apiUrl('/api/translate/stream'), {
@@ -957,6 +1000,7 @@
 
           let completed = false;
           let chunkCount = 1;
+          let receivedDelta = false;
           const streamedChunks = new Map();
           for await (const event of readDemoStreamEvents(response.body)) {
             if (requestId !== demoRequestId) {
@@ -966,6 +1010,7 @@
               chunkCount = event.totalChunks || chunkCount;
               demoStatus.textContent = chunkCount > 1 ? `正在翻译 1/${chunkCount} 段...` : '正在翻译...';
             } else if (event.type === 'delta') {
+              receivedDelta = true;
               const chunkIndex = event.chunkIndex || 1;
               chunkCount = event.chunkCount || chunkCount;
               streamedChunks.set(chunkIndex, event.translatedText || '');
@@ -975,11 +1020,19 @@
               const chunkIndex = event.chunkIndex || 1;
               chunkCount = event.chunkCount || chunkCount;
               streamedChunks.set(chunkIndex, event.translatedText || '');
-              updateDemoStreamedResult(streamedChunks, chunkCount);
+              if (receivedDelta) {
+                updateDemoStreamedResult(streamedChunks, chunkCount);
+              } else {
+                void animateDemoResultText(event.translatedText || '', requestId);
+              }
               demoStatus.textContent = chunkCount > 1 ? `已完成第 ${chunkIndex}/${chunkCount} 段` : '正在整理译文...';
             } else if (event.type === 'done') {
               completed = true;
-              demoResult.textContent = event.result?.translatedText || demoResult.textContent || '未返回译文';
+              if (receivedDelta) {
+                setDemoResultText(event.result?.translatedText || demoResult.textContent || '未返回译文');
+              } else {
+                void animateDemoResultText(event.result?.translatedText || demoResult.textContent || '未返回译文', requestId);
+              }
               demoStatus.textContent = '翻译完成。';
             } else if (event.type === 'error') {
               throw new Error(event.error || '翻译失败');
@@ -988,14 +1041,14 @@
           if (!completed) {
             demoStatus.textContent = demoResult.textContent ? '翻译完成。' : '未返回译文';
             if (!demoResult.textContent) {
-              demoResult.textContent = '未返回译文';
+              setDemoResultText('未返回译文');
             }
           }
         } catch (error) {
           if (requestId !== demoRequestId) {
             return;
           }
-          demoResult.textContent = '当前无法进行翻译';
+          setDemoResultText('当前无法进行翻译');
           demoStatus.textContent = error instanceof Error ? error.message : '翻译失败';
         }
       }

@@ -35,4 +35,13 @@ describe('download page platform cards', () => {
     expect(html).toContain('if (image.dataset.currentAsset !== slide.image)');
     expect(html).not.toContain('resetCarouselTimer();\n\n      document.querySelector');
   });
+
+  it('keeps the demo result panel nonblank while waiting for late stream deltas', async () => {
+    const html = await readFile(path.resolve('server/public/download.html'), 'utf8');
+
+    expect(html).toContain("setDemoPendingResult('正在等待模型输出...')");
+    expect(html).toContain('function animateDemoResultText(targetText, requestId)');
+    expect(html).toContain('void animateDemoResultText(event.result?.translatedText');
+    expect(html).not.toContain("demoResult.textContent = '';");
+  });
 });
