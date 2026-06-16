@@ -1097,6 +1097,47 @@ describe('backend app', () => {
     }
   });
 
+  it('returns a parseable app error when the provider response is malformed', async () => {
+    const malformedDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-backend-malformed-'));
+    const malformedApp = createBackendApp({
+      dataDir: malformedDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: 'DeepSeek 通道',
+        providerType: 'deepseek-compatible',
+        baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-secret',
+        model: 'deepseek-v4-flash'
+      },
+      translateText: async () => {
+        const error = new Error('翻译接口返回内容无法解析，请稍后重试');
+        error.name = 'TranslationRequestError';
+        throw error;
+      }
+    });
+
+    try {
+      const response = await malformedApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'hello',
+          targetLanguage: 'zh-CN',
+          translationFormat: 'plain'
+        })
+      });
+
+      expect(response.status).toBe(422);
+      expect(response.body.error).toBe('翻译接口返回内容无法解析，请稍后重试');
+    } finally {
+      await malformedApp.store.waitForMetrics();
+      await rm(malformedDir, { recursive: true, force: true });
+    }
+  });
+
   it('accepts the nginx backend prefix in API paths', async () => {
     const response = await request('GET', '/quick-translate/backend/api/downloads');
 

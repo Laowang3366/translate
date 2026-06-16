@@ -1019,11 +1019,11 @@ function inferTranslationErrorStatus(error) {
   if (isAbortError(error) || safeTranslationErrorMessage(error).includes('超时')) {
     return 408;
   }
-  if (typeof status === 'number' && status >= 400) {
-    return 502;
+  if (status === 429) {
+    return 429;
   }
 
-  return 502;
+  return 422;
 }
 
 function effectiveTranslationTimeoutMs(timeoutMs, chunkCount) {
