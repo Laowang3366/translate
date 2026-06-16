@@ -141,11 +141,12 @@ function formatServerSentEvent(event) {
 
 async function serveStaticFile(response, filePath, contentType) {
   try {
+    const file = await readFile(filePath);
     response.writeHead(200, {
       'content-type': contentType,
       'cache-control': 'no-cache'
     });
-    response.end(await readFile(filePath));
+    response.end(file);
   } catch {
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
     response.end('页面不存在');
