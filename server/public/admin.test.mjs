@@ -20,9 +20,21 @@ describe('admin dashboard translation usage chart', () => {
     expect(html).toContain('id="open-provider-dialog-button"');
     expect(html).toContain('id="provider-type-suggestions"');
     expect(html).toContain('<input id="provider-type"');
+    expect(html).toContain('id="request-timeout-minutes"');
+    expect(html).toContain('请求超时（分钟）');
     expect(html).not.toContain('<select id="provider-type"');
     expect(html).toContain('function openProviderDialog(');
     expect(html).toContain('function closeProviderDialog()');
+  });
+
+  it('supports revealing and hiding saved provider API keys in the admin page', async () => {
+    const html = await readFile(path.resolve('server/public/admin.html'), 'utf8');
+
+    expect(html).toContain('data-provider-action="reveal-key"');
+    expect(html).toContain('data-provider-action="hide-key"');
+    expect(html).toContain('/secret');
+    expect(html).toContain('查看密钥');
+    expect(html).toContain('隐藏密钥');
   });
 
   it('does not inject a hard-coded fallback model into provider configuration', async () => {

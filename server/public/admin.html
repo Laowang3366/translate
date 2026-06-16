@@ -1366,6 +1366,11 @@
                   <button id="load-models-button" class="text-button" type="button">获取模型</button>
                 </div>
               </label>
+              <label class="form-row">
+                <span>请求超时（分钟）</span>
+                <input id="request-timeout-minutes" type="number" min="1" max="30" step="1" value="1" />
+                <small class="field-hint">长文本翻译建议设置为 2-5 分钟，最大 30 分钟。</small>
+              </label>
               <div class="form-actions">
                 <button id="save-button" class="primary-button" type="button">保存当前引擎</button>
                 <button id="cancel-provider-dialog-button" class="outline-button" type="button">取消</button>
@@ -1539,6 +1544,7 @@
         admin: null,
         keyEditing: false,
         modelOptions: [],
+        revealedProviderKeys: {},
         metrics: null
       };
       const languageLabels = {
@@ -1760,7 +1766,8 @@
           providerType: document.querySelector('#provider-type').value,
           baseUrl: document.querySelector('#base-url').value,
           apiKey: state.keyEditing ? document.querySelector('#api-key').value : '',
-          model: document.querySelector('#model').value
+          model: document.querySelector('#model').value,
+          requestTimeoutMinutes: document.querySelector('#request-timeout-minutes').value
         };
       }
 
@@ -1774,6 +1781,7 @@
         document.querySelector('#provider-type').value = provider.providerType || 'openai-compatible';
         document.querySelector('#base-url').value = provider.baseUrl || '';
         renderModelOptions(provider.model ? [provider.model] : [], provider.model || '');
+        document.querySelector('#request-timeout-minutes').value = String(provider.requestTimeoutMinutes || 1);
         const apiKeyInput = document.querySelector('#api-key');
         apiKeyInput.value = '';
         apiKeyInput.disabled = true;
@@ -1794,6 +1802,7 @@
         document.querySelector('#provider-type').value = 'openai-compatible';
         document.querySelector('#base-url').value = '';
         renderModelOptions([], '');
+        document.querySelector('#request-timeout-minutes').value = '1';
         const apiKeyInput = document.querySelector('#api-key');
         apiKeyInput.value = '';
         apiKeyInput.disabled = false;
@@ -1833,6 +1842,12 @@
       }
 
       function renderProviderRow(provider) {
+        const revealedApiKey = state.revealedProviderKeys[provider.id] || '';
+        const keyDisplay = revealedApiKey
+          ? revealedApiKey
+          : provider.hasApiKey
+            ? provider.maskedApiKey || '••••••••'
+            : '未保存';
         return `
           <article class="provider-row ${provider.active ? 'active' : ''}">
             <div class="provider-main">
@@ -1846,10 +1861,18 @@
               <div class="provider-meta"><span>接口地址</span><strong>${escapeHtml(provider.baseUrl || '--')}</strong></div>
               <div class="provider-meta"><span>模型</span><strong>${escapeHtml(provider.model || '--')}</strong></div>
               <div class="provider-meta"><span>引擎类型</span><strong>${escapeHtml(provider.providerType || '--')}</strong></div>
-              <div class="provider-meta"><span>密钥</span><strong>${provider.hasApiKey ? escapeHtml(provider.maskedApiKey || '••••••••') : '未保存'}</strong></div>
+              <div class="provider-meta"><span>请求超时</span><strong>${escapeHtml(provider.requestTimeoutMinutes || 1)} 分钟</strong></div>
+              <div class="provider-meta"><span>密钥</span><strong>${escapeHtml(keyDisplay)}</strong></div>
             </div>
             <div class="provider-actions">
               <button class="text-button" type="button" data-provider-action="edit" data-provider-id="${escapeHtml(provider.id)}">编辑</button>
+              ${
+                provider.hasApiKey
+                  ? revealedApiKey
+                    ? `<button class="text-button" type="button" data-provider-action="hide-key" data-provider-id="${escapeHtml(provider.id)}">隐藏密钥</button>`
+                    : `<button class="text-button" type="button" data-provider-action="reveal-key" data-provider-id="${escapeHtml(provider.id)}">查看密钥</button>`
+                  : ''
+              }
               ${
                 provider.active
                   ? ''
@@ -1878,6 +1901,12 @@
         if (button.dataset.providerAction === 'activate') {
           await activateProvider(provider.id);
         }
+        if (button.dataset.providerAction === 'reveal-key') {
+          await revealProviderKey(provider.id);
+        }
+        if (button.dataset.providerAction === 'hide-key') {
+          hideProviderKey(provider.id);
+        }
         if (button.dataset.providerAction === 'delete') {
           await deleteProvider(provider);
         }
@@ -1901,6 +1930,28 @@
         state.editingProviderId = providerId;
         providerStatusText.textContent = '当前启用引擎已切换';
         await loadProviders();
+      }
+
+      async function revealProviderKey(providerId) {
+        providerStatusText.textContent = '正在读取密钥...';
+        const response = await fetch(apiUrl(`/api/admin/providers/${encodeURIComponent(providerId)}/secret`), {
+          headers: { authorization: `Bearer ${token}` }
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          providerStatusText.textContent = payload.error || '密钥读取失败';
+          return;
+        }
+
+        state.revealedProviderKeys[providerId] = payload.apiKey || '';
+        providerStatusText.textContent = '密钥已显示，请注意不要在公开环境泄露';
+        renderProviders();
+      }
+
+      function hideProviderKey(providerId) {
+        delete state.revealedProviderKeys[providerId];
+        providerStatusText.textContent = '密钥已隐藏';
+        renderProviders();
       }
 
       function enableKeyEditing() {

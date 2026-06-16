@@ -238,6 +238,142 @@ describe('backend app', () => {
     expect(deleteResponse.body.providers[0].active).toBe(true);
   });
 
+  it('uses the first fully configured user provider as the default active engine', async () => {
+    const providerDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-provider-default-'));
+    const providerApp = createBackendApp({
+      dataDir: providerDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        name: '默认翻译引擎',
+        providerType: 'mock',
+        baseUrl: '',
+        apiKey: '',
+        model: ''
+      },
+      translateText: async ({ text, targetLanguage, provider }) => ({
+        sourceText: text,
+        targetLanguage,
+        translatedText: `translated:${text}`,
+        provider: provider.providerType
+      })
+    });
+
+    try {
+      const loginResponse = await providerApp.handleRequest({
+        method: 'POST',
+        url: '/api/admin/login',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'admin-pass' })
+      });
+      expect(loginResponse.status).toBe(200);
+
+      const createResponse = await providerApp.handleRequest({
+        method: 'POST',
+        url: '/api/admin/providers',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${loginResponse.body.token}`
+        },
+        body: JSON.stringify({
+          name: '第一个真实引擎',
+          providerType: 'deepseek-compatible',
+          baseUrl: 'https://api.deepseek.com',
+          apiKey: 'sk-first',
+          model: 'deepseek-v4-flash',
+          active: false
+        })
+      });
+      expect(createResponse.status).toBe(201);
+
+      const listResponse = await providerApp.handleRequest({
+        method: 'GET',
+        url: '/api/admin/providers',
+        headers: { authorization: `Bearer ${loginResponse.body.token}` },
+        body: ''
+      });
+      expect(listResponse.status).toBe(200);
+      expect(listResponse.body.activeProviderId).toBe(createResponse.body.provider.id);
+      expect(listResponse.body.providers.find((provider) => provider.name === '默认翻译引擎').active).toBe(false);
+      expect(listResponse.body.providers.find((provider) => provider.name === '第一个真实引擎').active).toBe(true);
+    } finally {
+      await providerApp.store.waitForMetrics();
+      await rm(providerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes provider timeout minutes to the translation request as milliseconds', async () => {
+    let capturedTimeoutMs = 0;
+    const timeoutDir = await mkdtemp(path.join(tmpdir(), 'quick-translate-provider-timeout-'));
+    const timeoutApp = createBackendApp({
+      dataDir: timeoutDir,
+      jwtSecret: 'test-secret',
+      adminUsername: 'admin',
+      adminPassword: 'admin-pass',
+      defaultProvider: {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'sk-timeout',
+        model: 'gpt-timeout',
+        requestTimeoutMinutes: 3
+      },
+      translateText: async ({ text, targetLanguage, timeoutMs }) => {
+        capturedTimeoutMs = timeoutMs;
+        return {
+          sourceText: text,
+          targetLanguage,
+          translatedText: `translated:${text}`,
+          provider: 'openai-compatible'
+        };
+      }
+    });
+
+    try {
+      const translateResponse = await timeoutApp.handleRequest({
+        method: 'POST',
+        url: '/api/translate',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello', targetLanguage: 'zh-CN', translationFormat: 'plain' })
+      });
+
+      expect(translateResponse.status).toBe(200);
+      expect(capturedTimeoutMs).toBe(180_000);
+    } finally {
+      await timeoutApp.store.waitForMetrics();
+      await rm(timeoutDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets an authenticated admin reveal a provider API key on demand', async () => {
+    const loginResponse = await request('POST', '/api/admin/login', {
+      username: 'admin',
+      password: 'admin-pass'
+    });
+    const createResponse = await request(
+      'POST',
+      '/api/admin/providers',
+      {
+        name: '可查看密钥引擎',
+        providerType: 'openai-compatible',
+        baseUrl: 'https://secret.test/v1',
+        apiKey: 'sk-visible-secret',
+        model: 'gpt-visible'
+      },
+      loginResponse.body.token
+    );
+
+    const secretResponse = await request(
+      'GET',
+      `/api/admin/providers/${createResponse.body.provider.id}/secret`,
+      undefined,
+      loginResponse.body.token
+    );
+
+    expect(secretResponse.status).toBe(200);
+    expect(secretResponse.body).toEqual({ apiKey: 'sk-visible-secret' });
+  });
+
   it('allows custom provider types for OpenAI-compatible engine channels', async () => {
     const loginResponse = await request('POST', '/api/admin/login', {
       username: 'admin',

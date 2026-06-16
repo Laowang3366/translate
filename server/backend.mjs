@@ -27,6 +27,8 @@ const defaultNotifications = [];
 const defaultUpdateFailureReports = [];
 const defaultUpdateReportToken = 'quick-translate-update-report-v1';
 const beijingOffsetMs = 8 * 60 * 60 * 1000;
+const defaultProviderRequestTimeoutMinutes = 1;
+const maxProviderRequestTimeoutMinutes = 30;
 const defaultMetrics = {
   apiCalls: {
     total: 0,
@@ -142,6 +144,13 @@ export function createBackendApp(options = {}) {
         return createJsonResponse(200, { models: await fetchProviderModels(await readJsonBody(request), store) });
       }
 
+      const providerSecretMatch = pathname.match(/^\/api\/admin\/providers\/([^/]+)\/secret$/);
+      if (providerSecretMatch && method === 'GET') {
+        requireAuth(request, jwtSecret, 'admin');
+        const provider = await store.getProviderById(providerSecretMatch[1]);
+        return createJsonResponse(200, { apiKey: provider.apiKey });
+      }
+
       const providerMatch = pathname.match(/^\/api\/admin\/providers\/([^/]+)$/);
       if (providerMatch && method === 'PUT') {
         requireAuth(request, jwtSecret, 'admin');
@@ -213,7 +222,8 @@ export function createBackendApp(options = {}) {
             text: stringOrEmpty(body.text),
             targetLanguage: stringOrEmpty(body.targetLanguage) || 'zh-CN',
             translationFormat: stringOrEmpty(body.translationFormat) || 'plain',
-            provider
+            provider,
+            timeoutMs: provider.requestTimeoutMinutes * 60_000
           });
         } catch (error) {
           logTranslationError(logger, {
@@ -506,6 +516,15 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
     async getProviderState() {
       return normalizeProviderState(await files.provider.read(), defaultProvider);
     },
+    async getProviderById(providerId) {
+      const providerState = normalizeProviderState(await files.provider.read(), defaultProvider);
+      const provider = providerState.providers.find((item) => item.id === providerId);
+      if (!provider) {
+        throw new HttpError(404, '引擎不存在');
+      }
+
+      return provider;
+    },
     async createProvider(provider) {
       let createdProvider = null;
       await files.provider.update((value) => {
@@ -518,9 +537,11 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
           },
           defaultProvider
         );
+        const providers = [...providerState.providers, createdProvider];
+        const requestedActiveProviderId = provider.active === true ? createdProvider.id : providerState.activeProviderId;
         return {
-          activeProviderId: provider.active === true ? createdProvider.id : providerState.activeProviderId || createdProvider.id,
-          providers: [...providerState.providers, createdProvider]
+          activeProviderId: resolveActiveProviderId(providers, requestedActiveProviderId),
+          providers
         };
       });
 
@@ -544,9 +565,11 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
           },
           provider
         );
+        const providers = providerState.providers.map((item) => (item.id === providerId ? nextProvider : item));
+        const requestedActiveProviderId = update.active === true ? providerId : providerState.activeProviderId;
         return {
-          activeProviderId: update.active === true ? providerId : providerState.activeProviderId,
-          providers: providerState.providers.map((item) => (item.id === providerId ? nextProvider : item))
+          activeProviderId: resolveActiveProviderId(providers, requestedActiveProviderId),
+          providers
         };
       });
     },
@@ -563,7 +586,10 @@ export function createJsonStore({ dataDir, defaultProvider, defaultAdmin }) {
 
         const providers = providerState.providers.filter((item) => item.id !== providerId);
         return {
-          activeProviderId: providerState.activeProviderId === providerId ? providers[0].id : providerState.activeProviderId,
+          activeProviderId: resolveActiveProviderId(
+            providers,
+            providerState.activeProviderId === providerId ? '' : providerState.activeProviderId
+          ),
           providers
         };
       });
@@ -1043,7 +1069,8 @@ function normalizeProvider(value, fallback = {}) {
     providerType: normalizeProviderType(record.providerType) || normalizeProviderType(fallback.providerType) || 'openai-compatible',
     baseUrl: stringOrEmpty(record.baseUrl) || stringOrEmpty(fallback.baseUrl),
     apiKey: stringOrEmpty(record.apiKey) || stringOrEmpty(fallback.apiKey),
-    model: stringOrEmpty(record.model) || stringOrEmpty(fallback.model)
+    model: stringOrEmpty(record.model) || stringOrEmpty(fallback.model),
+    requestTimeoutMinutes: normalizeRequestTimeoutMinutes(record.requestTimeoutMinutes, fallback.requestTimeoutMinutes)
   };
 }
 
@@ -1054,6 +1081,20 @@ function normalizeProviderType(value) {
   }
 
   return normalized.slice(0, 80);
+}
+
+function normalizeRequestTimeoutMinutes(value, fallbackValue) {
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0) {
+    return Math.min(maxProviderRequestTimeoutMinutes, Math.max(1, Math.round(numericValue)));
+  }
+
+  const numericFallback = Number(fallbackValue);
+  if (Number.isFinite(numericFallback) && numericFallback > 0) {
+    return Math.min(maxProviderRequestTimeoutMinutes, Math.max(1, Math.round(numericFallback)));
+  }
+
+  return defaultProviderRequestTimeoutMinutes;
 }
 
 function isAbortError(error) {
@@ -1071,6 +1112,7 @@ function redactProvider(provider) {
     apiKey: '',
     maskedApiKey: provider.apiKey ? maskApiKey(provider.apiKey) : '',
     model: provider.model,
+    requestTimeoutMinutes: provider.requestTimeoutMinutes,
     hasApiKey: Boolean(provider.apiKey)
   };
 }
@@ -1102,12 +1144,35 @@ function normalizeProviderState(value, defaultProvider = {}) {
       ? [normalizeProvider({ ...record, id: 'default-provider', name: '默认翻译引擎' }, defaultProvider)]
       : [normalizeProvider({ id: 'default-provider', name: '默认翻译引擎' }, defaultProvider)];
   const activeProviderId = stringOrEmpty(record.activeProviderId);
-  const resolvedActiveProviderId = providers.some((provider) => provider.id === activeProviderId) ? activeProviderId : providers[0].id;
+  const resolvedActiveProviderId = resolveActiveProviderId(providers, activeProviderId);
 
   return {
     activeProviderId: resolvedActiveProviderId,
     providers
   };
+}
+
+function resolveActiveProviderId(providers, requestedActiveProviderId) {
+  const requestedProvider = providers.find((provider) => provider.id === requestedActiveProviderId);
+  if (requestedProvider && isFullyConfiguredProvider(requestedProvider)) {
+    return requestedProvider.id;
+  }
+
+  const firstConfiguredProvider = providers.find(isFullyConfiguredProvider);
+  if (firstConfiguredProvider) {
+    return firstConfiguredProvider.id;
+  }
+
+  return requestedProvider?.id || providers[0]?.id || '';
+}
+
+function isFullyConfiguredProvider(provider) {
+  return (
+    provider.providerType !== 'mock' &&
+    Boolean(provider.baseUrl) &&
+    Boolean(provider.apiKey) &&
+    Boolean(provider.model)
+  );
 }
 
 function getActiveProvider(providerState) {

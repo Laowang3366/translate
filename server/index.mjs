@@ -13,6 +13,7 @@ const maxBodyBytes = Number(process.env.QUICK_TRANSLATE_MAX_BODY_BYTES ?? 1_048_
 const providerApiKey = process.env.TRANSLATE_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
 const providerBaseUrl = process.env.TRANSLATE_BASE_URL ?? '';
 const providerModel = process.env.TRANSLATE_MODEL ?? '';
+const providerRequestTimeoutMinutes = process.env.TRANSLATE_TIMEOUT_MINUTES ?? '';
 
 const app = createBackendApp({
   dataDir,
@@ -23,13 +24,15 @@ const app = createBackendApp({
     providerType: process.env.TRANSLATE_PROVIDER ?? (providerApiKey && providerBaseUrl && providerModel ? 'openai-compatible' : 'mock'),
     baseUrl: providerBaseUrl,
     apiKey: providerApiKey,
-    model: providerModel
+    model: providerModel,
+    requestTimeoutMinutes: providerRequestTimeoutMinutes
   },
-  translateText: ({ text, targetLanguage, translationFormat, provider }) =>
+  translateText: ({ text, targetLanguage, translationFormat, provider, timeoutMs }) =>
     translateText({
       text,
       targetLanguage,
       translationFormat,
+      timeoutMs,
       provider: {
         type: provider.providerType === 'mock' ? 'mock' : 'openai-compatible',
         baseUrl: provider.baseUrl,
