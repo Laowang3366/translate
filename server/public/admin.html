@@ -1307,13 +1307,13 @@
             <div>
               <p class="breadcrumb">控制台 / 访问统计</p>
               <h1>访问统计</h1>
-              <p>统计未登录访客和已登录用户的页面访问情况，访客身份以脱敏指纹记录，不保存原始 IP。</p>
+              <p>统计未登录访客和已登录用户的页面访问情况，展示访问 IP、设备指纹和浏览器访问指纹，便于识别同 IP 高频访问。</p>
             </div>
             <button id="refresh-visitors-button" class="primary-button" type="button">刷新统计</button>
           </div>
           <div class="stats-grid four">
             <article class="stat-card"><span class="stat-icon" aria-hidden="true">访</span><div><span>总访问次数</span><strong id="visitor-total">0</strong></div></article>
-            <article class="stat-card"><span class="stat-icon green" aria-hidden="true">客</span><div><span>独立访客</span><strong id="visitor-unique-total">0</strong></div></article>
+            <article class="stat-card"><span class="stat-icon green" aria-hidden="true">客</span><div><span>独立设备</span><strong id="visitor-unique-total">0</strong></div></article>
             <article class="stat-card"><span class="stat-icon" aria-hidden="true">今</span><div><span>今日访问</span><strong id="visitor-today-total">0</strong></div></article>
             <article class="stat-card"><span class="stat-icon red" aria-hidden="true">近</span><div><span>最近访问</span><strong id="visitor-latest-at">--</strong></div></article>
           </div>
@@ -1331,6 +1331,8 @@
             <section class="panel-card distribution-card">
               <h2>设备分布</h2>
               <div class="distribution-list" id="visitor-device-list"></div>
+              <h2>访问 IP</h2>
+              <div class="distribution-list" id="visitor-ip-list"></div>
               <h2>来源分布</h2>
               <div class="distribution-list" id="visitor-referrer-list"></div>
             </section>
@@ -1341,15 +1343,15 @@
                 <span class="panel-title-mark" aria-hidden="true">记</span>
                 <div>
                   <h2>最近访问记录</h2>
-                  <p>只展示页面、来源、设备和脱敏访客指纹，不展示原始 IP。</p>
+                  <p>展示最近页面、来源、访问 IP、设备和指纹，用于排查异常访问和额度消耗。</p>
                 </div>
               </div>
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>页面</th><th>来源</th><th>设备</th><th>浏览器 / 系统</th><th>语言</th><th>访问时间</th><th>匿名指纹</th></tr></thead>
+                <thead><tr><th>页面</th><th>访问 IP</th><th>来源</th><th>设备</th><th>浏览器 / 系统</th><th>语言</th><th>访问时间</th><th>设备指纹</th><th>访问指纹</th></tr></thead>
                 <tbody id="visitor-recent-table">
-                  <tr><td colspan="7" class="muted">暂无访问记录</td></tr>
+                  <tr><td colspan="9" class="muted">暂无访问记录</td></tr>
                 </tbody>
               </table>
             </div>
@@ -2507,6 +2509,7 @@
         document.querySelector('#visitor-latest-at').textContent = visitors.latestAt ? formatDate(visitors.latestAt) : '--';
         document.querySelector('#visitor-usage-chart').innerHTML = renderUsageLineChart(days, '过去 7 天每天访问次数折线图');
         document.querySelector('#visitor-device-list').innerHTML = renderCounterDistribution(visitors.byDevice, deviceLabel);
+        document.querySelector('#visitor-ip-list').innerHTML = renderCounterDistribution(visitors.byIp, ipLabel);
         document.querySelector('#visitor-referrer-list').innerHTML = renderCounterDistribution(visitors.byReferrer, referrerLabel);
         renderRecentVisitors(visitors.recent);
       }
@@ -2519,17 +2522,19 @@
                 (visit) => `
                   <tr>
                     <td><strong>${escapeHtml(visit.page || '/')}</strong><br /><small class="muted">${escapeHtml(visit.title || '--')}</small></td>
+                    <td>${escapeHtml(ipLabel(visit.ip))}</td>
                     <td>${escapeHtml(referrerLabel(visit.referrer))}</td>
                     <td>${escapeHtml(deviceLabel(visit.device))}</td>
                     <td>${escapeHtml(visit.browser || 'Other')} / ${escapeHtml(visit.os || 'Other')}</td>
                     <td>${escapeHtml(visit.language || 'unknown')}</td>
                     <td>${formatDate(visit.visitedAt)}</td>
+                    <td><span class="pill">${escapeHtml(String(visit.deviceHash || '').slice(0, 10))}</span></td>
                     <td><span class="pill">${escapeHtml(String(visit.visitorHash || '').slice(0, 10))}</span></td>
                   </tr>
                 `
               )
               .join('')
-          : '<tr><td colspan="7" class="muted">暂无访问记录</td></tr>';
+          : '<tr><td colspan="9" class="muted">暂无访问记录</td></tr>';
       }
 
       function renderTrend() {
@@ -2730,6 +2735,10 @@
 
       function referrerLabel(value) {
         return value === 'direct' ? '直接访问' : value || '未知来源';
+      }
+
+      function ipLabel(value) {
+        return value || '未知 IP';
       }
 
       function notificationSeverityLabel(value) {

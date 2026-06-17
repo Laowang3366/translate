@@ -665,7 +665,7 @@ describe('backend app', () => {
     expect(statsResponse.body.metrics.apiCalls.byEndpoint['POST /api/downloads/track']).toBe(1);
   });
 
-  it('tracks anonymous visitor access without requiring user login and redacts raw IP details', async () => {
+  it('tracks anonymous visitor access by device hash and exposes IP details for admin risk review', async () => {
     const today = beijingDayKey(new Date());
     const firstVisitResponse = await app.handleRequest({
       method: 'POST',
@@ -677,10 +677,11 @@ describe('backend app', () => {
         'x-forwarded-for': '203.0.113.7'
       },
       body: JSON.stringify({
-        visitorId: 'anonymous-device-1',
+        visitorId: 'anonymous-browser-a',
         page: '/',
         title: '快捷翻译首页',
-        referrer: ''
+        referrer: '',
+        language: 'zh-CN'
       })
     });
     const secondVisitResponse = await app.handleRequest({
@@ -693,10 +694,11 @@ describe('backend app', () => {
         'x-forwarded-for': '203.0.113.7'
       },
       body: JSON.stringify({
-        visitorId: 'anonymous-device-1',
+        visitorId: 'anonymous-browser-b',
         page: '/download',
         title: '快捷翻译下载',
-        referrer: 'https://sg.lwvpscc.top/'
+        referrer: 'https://sg.lwvpscc.top/',
+        language: 'en-US'
       })
     });
     const adminLoginResponse = await request('POST', '/api/admin/login', {
@@ -723,17 +725,29 @@ describe('backend app', () => {
       byReferrer: {
         direct: 1,
         'sg.lwvpscc.top': 1
-      }
+      },
+      byIp: { '203.0.113.7': 2 }
     });
     expect(statsResponse.body.metrics.visitors.recent[0]).toMatchObject({
       page: '/download',
       title: '快捷翻译下载',
       browser: 'Chrome',
       os: 'Windows',
-      device: 'desktop'
+      device: 'desktop',
+      ip: '203.0.113.7'
+    });
+    expect(statsResponse.body.metrics.visitors.recent[1]).toMatchObject({
+      page: '/',
+      ip: '203.0.113.7'
     });
     expect(statsResponse.body.metrics.visitors.recent[0].visitorHash).toEqual(expect.any(String));
-    expect(JSON.stringify(statsResponse.body.metrics.visitors)).not.toContain('203.0.113.7');
+    expect(statsResponse.body.metrics.visitors.recent[0].deviceHash).toEqual(expect.any(String));
+    expect(statsResponse.body.metrics.visitors.recent[0].deviceHash).toBe(
+      statsResponse.body.metrics.visitors.recent[1].deviceHash
+    );
+    expect(statsResponse.body.metrics.visitors.recent[0].visitorHash).not.toBe(
+      statsResponse.body.metrics.visitors.recent[1].visitorHash
+    );
   });
 
   it('requires the update failure report token and stores accepted reports', async () => {

@@ -93,9 +93,11 @@ const defaultMetrics = {
     byBrowser: {},
     byOs: {},
     byReferrer: {},
+    byIp: {},
     latestAt: '',
     recent: [],
-    knownVisitorHashes: {}
+    knownVisitorHashes: {},
+    knownDeviceHashes: {}
   }
 };
 const defaultTranslationCache = {
@@ -2131,6 +2133,8 @@ function normalizeMetrics(value) {
   const translations = isRecord(record.translations) ? record.translations : {};
   const downloads = isRecord(record.downloads) ? record.downloads : {};
   const visitors = isRecord(record.visitors) ? record.visitors : {};
+  const knownVisitorHashes = normalizeStringRecord(visitors.knownVisitorHashes);
+  const knownDeviceHashes = normalizeStringRecord(visitors.knownDeviceHashes);
 
   return {
     apiCalls: {
@@ -2177,9 +2181,11 @@ function normalizeMetrics(value) {
       byBrowser: normalizeCounterRecord(visitors.byBrowser),
       byOs: normalizeCounterRecord(visitors.byOs),
       byReferrer: normalizeCounterRecord(visitors.byReferrer),
+      byIp: normalizeCounterRecord(visitors.byIp),
       latestAt: stringOrEmpty(visitors.latestAt),
       recent: normalizeRecentVisits(visitors.recent),
-      knownVisitorHashes: normalizeStringRecord(visitors.knownVisitorHashes)
+      knownVisitorHashes,
+      knownDeviceHashes: Object.keys(knownDeviceHashes).length > 0 ? knownDeviceHashes : { ...knownVisitorHashes }
     }
   };
 }
@@ -2265,7 +2271,9 @@ function incrementVisitMetrics(value, event) {
   const record = normalizeVisitRecord(event);
   const day = formatMetricDay(record.visitedAt);
   const knownVisitors = metrics.visitors.knownVisitorHashes;
-  const isNewVisitor = record.visitorHash && !knownVisitors[record.visitorHash];
+  const knownDevices = metrics.visitors.knownDeviceHashes;
+  const deviceIdentity = record.deviceHash || record.visitorHash;
+  const isNewDevice = deviceIdentity && !knownDevices[deviceIdentity];
 
   metrics.visitors.total += 1;
   incrementCounter(metrics.visitors.byDay, day);
@@ -2274,14 +2282,21 @@ function incrementVisitMetrics(value, event) {
   incrementCounter(metrics.visitors.byBrowser, record.browser);
   incrementCounter(metrics.visitors.byOs, record.os);
   incrementCounter(metrics.visitors.byReferrer, record.referrer);
+  if (record.ip) {
+    incrementCounter(metrics.visitors.byIp, record.ip);
+  }
   metrics.visitors.latestAt = record.visitedAt;
 
-  if (isNewVisitor) {
+  if (record.visitorHash && !knownVisitors[record.visitorHash]) {
     knownVisitors[record.visitorHash] = record.visitedAt;
-    metrics.visitors.uniqueTotal = Object.keys(knownVisitors).length;
+  }
+
+  if (isNewDevice) {
+    knownDevices[deviceIdentity] = record.visitedAt;
+    metrics.visitors.uniqueTotal = Object.keys(knownDevices).length;
     incrementCounter(metrics.visitors.uniqueByDay, day);
   } else {
-    metrics.visitors.uniqueTotal = Object.keys(knownVisitors).length;
+    metrics.visitors.uniqueTotal = Object.keys(knownDevices).length;
   }
 
   metrics.visitors.recent = [record, ...metrics.visitors.recent].slice(0, 100);
@@ -2291,11 +2306,15 @@ function incrementVisitMetrics(value, event) {
 function normalizeVisitEvent(body, request) {
   const record = isRecord(body) ? body : {};
   const userAgent = stringOrEmpty(record.userAgent) || requestHeader(request, 'user-agent');
-  const visitorSource = buildVisitorSource(record, request, userAgent);
   const userAgentInfo = classifyUserAgent(userAgent);
+  const clientIp = clientIpFromRequest(request);
+  const visitorSource = buildVisitorSource(record, clientIp, userAgent);
+  const deviceSource = buildDeviceSource(clientIp, userAgentInfo, userAgent, visitorSource);
 
   return normalizeVisitRecord({
     visitorHash: visitorSource ? hashString(visitorSource).slice(0, 24) : hashString(randomId()).slice(0, 24),
+    deviceHash: deviceSource ? hashString(deviceSource).slice(0, 24) : '',
+    ip: clientIp,
     page: record.page || record.pathname,
     title: record.title,
     referrer: record.referrer || requestHeader(request, 'referer'),
@@ -2310,15 +2329,25 @@ function normalizeVisitEvent(body, request) {
 function normalizeVisitRecord(value) {
   const record = isRecord(value) ? value : {};
   const visitedAt = new Date(stringOrEmpty(record.visitedAt));
+  const visitorHash = stringOrEmpty(record.visitorHash).slice(0, 64);
+  const ip = normalizeClientIp(record.ip);
+  const device = normalizeVisitDimension(record.device, 'unknown');
+  const browser = normalizeVisitDimension(record.browser, 'Other');
+  const os = normalizeVisitDimension(record.os, 'Other');
+  const deviceHash =
+    stringOrEmpty(record.deviceHash).slice(0, 64) ||
+    (ip ? hashString(`device:${ip}|${device}|${browser}|${os}`).slice(0, 24) : visitorHash);
   return {
-    visitorHash: stringOrEmpty(record.visitorHash).slice(0, 64),
+    visitorHash,
+    deviceHash,
+    ip,
     page: normalizeVisitPage(record.page),
     title: stringOrEmpty(record.title).trim().slice(0, 120),
     referrer: normalizeVisitReferrer(record.referrer),
     language: normalizeVisitLanguage(record.language),
-    device: normalizeVisitDimension(record.device, 'unknown'),
-    browser: normalizeVisitDimension(record.browser, 'Other'),
-    os: normalizeVisitDimension(record.os, 'Other'),
+    device,
+    browser,
+    os,
     visitedAt: Number.isNaN(visitedAt.getTime()) ? new Date().toISOString() : visitedAt.toISOString()
   };
 }
@@ -2328,7 +2357,7 @@ function normalizeRecentVisits(value) {
     ? value
         .filter(isRecord)
         .map(normalizeVisitRecord)
-        .filter((visit) => visit.visitorHash)
+        .filter((visit) => visit.deviceHash || visit.visitorHash)
         .slice(0, 100)
     : [];
 }
@@ -2345,16 +2374,40 @@ function normalizeStringRecord(value) {
   );
 }
 
-function buildVisitorSource(record, request, userAgent) {
+function buildVisitorSource(record, clientIp, userAgent) {
   const visitorId = stringOrEmpty(record.visitorId).trim();
   if (visitorId) {
     return `visitor:${visitorId.slice(0, 200)}`;
   }
 
-  const clientIp = firstForwardedIp(requestHeader(request, 'x-forwarded-for')) || requestHeader(request, 'x-real-ip');
-  const language = requestHeader(request, 'accept-language');
-  const source = [clientIp, userAgent, language].filter(Boolean).join('|');
+  const source = [clientIp, userAgent].filter(Boolean).join('|');
   return source ? `request:${source}` : '';
+}
+
+function buildDeviceSource(clientIp, userAgentInfo, userAgent, visitorSource) {
+  const info = isRecord(userAgentInfo) ? userAgentInfo : {};
+  const source = [
+    clientIp,
+    stringOrEmpty(info.device),
+    stringOrEmpty(info.os),
+    stringOrEmpty(info.browser)
+  ]
+    .filter(Boolean)
+    .join('|');
+  if (source) {
+    return `device:${source}`;
+  }
+
+  return visitorSource || (userAgent ? `agent:${userAgent}` : '');
+}
+
+function clientIpFromRequest(request) {
+  return (
+    normalizeClientIp(requestHeader(request, 'cf-connecting-ip')) ||
+    normalizeClientIp(requestHeader(request, 'true-client-ip')) ||
+    normalizeClientIp(firstForwardedIp(requestHeader(request, 'x-forwarded-for'))) ||
+    normalizeClientIp(requestHeader(request, 'x-real-ip'))
+  );
 }
 
 function requestHeader(request, headerName) {
@@ -2370,6 +2423,17 @@ function requestHeader(request, headerName) {
 
 function firstForwardedIp(value) {
   return stringOrEmpty(value).split(',')[0]?.trim() || '';
+}
+
+function normalizeClientIp(value) {
+  const normalized = stringOrEmpty(value).trim();
+  if (!normalized || normalized.toLowerCase() === 'unknown') {
+    return '';
+  }
+
+  const withoutBrackets = normalized.replace(/^\[|\]$/g, '');
+  const ipv4WithPort = withoutBrackets.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+  return (ipv4WithPort ? ipv4WithPort[1] : withoutBrackets).slice(0, 80);
 }
 
 function normalizeVisitPage(value) {

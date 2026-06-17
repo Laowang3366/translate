@@ -94,8 +94,11 @@ describe('admin dashboard translation usage chart', () => {
     expect(html).toContain('id="visitor-unique-total"');
     expect(html).toContain('id="visitor-usage-chart"');
     expect(html).toContain('id="visitor-device-list"');
+    expect(html).toContain('id="visitor-ip-list"');
     expect(html).toContain('id="visitor-referrer-list"');
     expect(html).toContain('id="visitor-recent-table"');
+    expect(html).toContain('访问 IP');
+    expect(html).toContain('设备指纹');
     expect(html).toContain('function renderVisitorStats()');
     expect(html).toContain('metrics.visitors');
   });
