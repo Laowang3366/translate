@@ -1,6 +1,16 @@
 {
-  "latestVersion": "0.1.98",
+  "latestVersion": "0.1.99",
   "releases": [
+    {
+      "version": "0.1.99",
+      "platform": "windows",
+      "fileName": "Quick-Translate-0.1.99.exe",
+      "url": "https://sg.lwvpscc.top/quick-translate/updates/latest/Quick-Translate-0.1.99.exe",
+      "size": 99490829,
+      "sha512": "gQ7bmIW67CLbF7wx5RDDmP+2gFF5YaBW9koo3/+18/uqeGbVy4W98VyBteU6uYIZXwdahDy5AF19rAsqo6Se1A==",
+      "releaseDate": "2026-07-11T11:42:21.325Z",
+      "releaseNotes": "0.1.99：修复 12 个依赖安全漏洞，升级桌面更新运行依赖并移除安装包中的无用构建依赖。"
+    },
     {
       "version": "0.1.98",
       "platform": "windows",
@@ -10,16 +20,6 @@
       "sha512": "wyZ2FntZC2vfGwUnQzKtuxAW4toJ0SraSnMD9FaSVZS9Zz04aljPC41n+Xjrk6LIaHuIEExtza3Hcv0m67r6aw==",
       "releaseDate": "2026-06-16T13:55:58.397Z",
       "releaseNotes": "0.1.98：新增模型流式输出，主窗口、桌面悬浮窗和官网体验翻译会实时显示模型正在输出的译文，减少长文本等待体感。"
-    },
-    {
-      "version": "0.1.97",
-      "platform": "windows",
-      "fileName": "Quick-Translate-0.1.97.exe",
-      "url": "https://sg.lwvpscc.top/quick-translate/updates/latest/Quick-Translate-0.1.97.exe",
-      "size": 104467948,
-      "sha512": "ybDcH3su5jQm0wRmrdE+vMvW9Z4Y+ZFCPqNXjIpXGZxN6smM5w2P+OxW1RQ/k7GzPZUkW/5hQyEegX8Vl7H3fw==",
-      "releaseDate": "2026-05-19T04:50:37.424Z",
-      "releaseNotes": "0.1.97：新增桌面端悬浮窗出现位置设置，支持跟随鼠标、第一次出现的位置、自定义屏幕位置。\n自定义屏幕位置可通过设置页保存当前悬浮窗坐标，屏幕变化后会自动限制在可见区域内。"
     },
     {
       "version": "0.1.94",
